@@ -17,24 +17,35 @@ release; this file lists accepted V0.1 limitations.
 3. **The current conversation id comes from `browser-sidebar-page-states.json`
    (most recently updated non-error tab).** If the user opens two tabs and
    switches rapidly, the id can briefly lag one tab behind. The title cross
-   check (UIA selected list item) catches most of these, and on any
-   inconsistency the resolver answers `unknown`/`mismatch` - refusing to send.
+   check (`resolve_current_conversation`) catches most of these, and on any
+   inconsistency confidence drops and the send is refused.
+4. **Web-cache conversations (chatgpt.com in Chrome/Edge) are never read.**
+   They exist on disk but the picker only uses the desktop app's own data, so
+   a web-only conversation cannot be selected as a target.
+
+## Prompt presets
+
+5. **Preset variables are render-time only.** `{{conversation_title}}` etc.
+   come from the daemon at send time; the editor preview does not substitute
+   them.
+6. **Bindings are keyed by conversation id.** If ChatGPT re-issues a new id
+   for the same conversation (fork/branch), the binding must be re-made.
 
 ## Test send
 
-4. **After an UNCERTAIN test send the GUI cannot verify the ChatGPT side.**
+7. **After an UNCERTAIN test send the GUI cannot verify the ChatGPT side.**
    The transaction is parked as UNCERTAIN and the Arm button stays blocked
    until a later test send confirms. There is deliberately no "retry" button.
 
 ## Packaging
 
-5. **The packaged exe starts slower the first time** (Windows Defender scans
+8. **The packaged exe starts slower the first time** (Windows Defender scans
    the extracted PySide6 tree). Subsequent starts are quick. The venv +
    `start-gui.ps1` path starts fastest and remains the recommended install.
 
 ## Daemon
 
-6. **Chromium renderer reparenting** (backgrounded conversation window) is
+9. **Chromium renderer reparenting** (backgrounded conversation window) is
    handled by the orphan-renderer fallback, but in that state the keyboard
    transport is unavailable (focus cannot be proven) - only UIA
    ValuePattern/InvokePattern sends work. This is by design.

@@ -20,17 +20,34 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1     # once
 powershell -ExecutionPolicy Bypass -File scripts\start-gui.ps1   # every day
 ```
 
-The window has six pages: **Overview** (quota, state, countdown, last resume),
-**Target** (pick the conversation to resume into), **Prompt**, **Notifications**,
-**Logs** and **Settings**. Closing the window minimises to the tray; the daemon
-keeps running.
+The main window is a Codex-style workspace: a **conversation sidebar** on the
+left (search, `Current` / `Target` markers, source badges, ✓ Matched) and a
+**unified control panel** on the right (target & runtime status, prompt
+presets, prompt editor, settings, safety checklist, actions). Closing the
+window minimises to the tray; the daemon keeps running.
 
-First run starts a wizard that walks through environment → target → prompt →
-**Supervised Test Send**. The test send uses the exact production transport
-(ValuePattern + InvokePattern, PREPARED fsync before input, POST_SEND_VERIFY)
-with a dedicated test prompt and its own transaction record, so it can never
-consume a real quota `reset_id`. **Real sends stay blocked until the test send
-has passed**, and the Arm button stays disabled until then.
+**Prompt presets** ship with five built-in templates (继续既定开发计划 /
+继续开发并自动修复 / 测试与验收收尾 / 自主持续推进 / 只继续当前阶段). You can
+create, edit, duplicate, favourite and delete presets, set a default, and
+**bind a preset to a specific conversation** - each target conversation can
+resume with its own strategy. Presets support a small set of safe variables
+(`{{conversation_title}}`, `{{current_time}}`, `{{quota_reset_time}}`, …);
+nothing is evaluated, only substituted. Presets persist in
+`data/prompt_presets.json`, bindings in `data/conversation_bindings.json`.
+
+**Conversation sources are labelled.** `Desktop` marks the conversation
+actually open in the desktop UI (execution truth); `Local Storage` marks
+cached candidates. A cached entry is never presented as the open conversation,
+and a title that matches several conversations is AMBIGUOUS - nothing is sent.
+
+First run starts a wizard that walks through environment → quota → target →
+preset → **Supervised Test Send**. The test send uses the exact production
+transport (ValuePattern + InvokePattern, PREPARED fsync before input,
+POST_SEND_VERIFY) with a dedicated test prompt and its own transaction record,
+so it can never consume a real quota `reset_id`. **Real sends stay blocked
+until the test send has passed**, the Test Send button itself is disabled
+without a target / on mismatch / on ambiguity, and the Arm button stays
+disabled until then.
 
 A standalone build is also available:
 
@@ -40,9 +57,7 @@ A standalone build is also available:
 ```
 
 The GUI reads the conversation list from ChatGPT Desktop's **local** storage
-(read-only LevelDB) - no private web APIs, no cookies, no uploads. If a
-conversation title matches more than one conversation, the target is marked
-AMBIGUOUS and nothing is sent.
+(read-only LevelDB) - no private web APIs, no cookies, no uploads.
 
 ---
 
@@ -394,7 +409,7 @@ regex scrubbing for bearer tokens, JWTs and Telegram token shapes.
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q     # 103 tests
+.\.venv\Scripts\python.exe -m pytest tests -q     # 117 tests
 ```
 
 Coverage includes: every state-machine transition; ERROR being recoverable;
