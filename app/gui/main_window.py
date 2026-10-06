@@ -213,6 +213,17 @@ class WizardDialog(QDialog):
         self._refresh_steps()
 
     def _finish(self) -> None:
+        # Finishing the wizard PERSISTS the choices: a user who picked a
+        # conversation (or kept the preselected current one) and clicked
+        # Finish must end up with a configured target - no extra clicks.
+        conv = self._selected_conversation()
+        if conv is not None:
+            self.service.set_target(
+                conversation_id=conv.id, conversation_title=conv.display_title
+            )
+        preset_id = self.preset_combo.currentData()
+        if preset_id:
+            self.service.presets.set_default(preset_id)
         wizard_file = Path(self.service.cfg.data_dir) / "wizard.json"
         wizard_file.parent.mkdir(parents=True, exist_ok=True)
         wizard_file.write_text(
@@ -220,6 +231,17 @@ class WizardDialog(QDialog):
             encoding="utf-8",
         )
         self.accept()
+
+    def reject(self) -> None:  # noqa: D401 - user closed the wizard via X
+        # Closing the wizard counts as "skip": remember it so it does not pop
+        # up on every start.
+        wizard_file = Path(self.service.cfg.data_dir) / "wizard.json"
+        wizard_file.parent.mkdir(parents=True, exist_ok=True)
+        wizard_file.write_text(
+            json.dumps({"completed": True, "test_send_passed": self.service.test_store.passed}),
+            encoding="utf-8",
+        )
+        super().reject()
 
 
 class MainWindow(QMainWindow):
