@@ -30,7 +30,7 @@
     },
     "F_real_exhausted_waits": {
       "pass": true,
-      "detail": "state=QUOTA_EXHAUSTED 5h=0.0 weekly=67.0 pending=NONE"
+      "detail": "state=WAITING_RESET 5h=0.0 weekly=67.0 pending=NONE"
     }
   },
   "all_pass": true

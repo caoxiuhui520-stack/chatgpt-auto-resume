@@ -24,7 +24,13 @@ from typing import TYPE_CHECKING, Iterable
 
 from app.discovery import paths
 from app.discovery.leveldb_reader import LevelDB
-from app.discovery.models import ConversationInfo, ProjectInfo
+from app.discovery.models import (
+    ConversationInfo,
+    ProjectInfo,
+    SOURCE_CODEX_LOCAL_STORAGE,
+    SOURCE_DESKTOP_ACTIVE,
+    SOURCE_UNKNOWN,
+)
 from app.utils.logging_setup import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -84,6 +90,12 @@ class ConversationDiscoveryProvider:
         raise NotImplementedError
 
     def get_current_conversation(self) -> ConversationInfo | None:
+        raise NotImplementedError
+
+    def get_conversation_by_id(self, conversation_id: str) -> ConversationInfo | None:
+        raise NotImplementedError
+
+    def resolve_current_conversation(self, uia_title: str = "") -> ConversationInfo | None:
         raise NotImplementedError
 
     def refresh(self) -> None:
@@ -177,7 +189,9 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
             title=row.get("title", "") or "",
             project_id=row.get("workspace_id") or "",
             updated_at=row.get("update_time"),
-            source=self.name,
+            source=SOURCE_CODEX_LOCAL_STORAGE,
+            source_kind=SOURCE_CODEX_LOCAL_STORAGE,
+            is_cached=True,
         )
 
     def _read_projects(self) -> list[ProjectInfo]:
@@ -230,19 +244,93 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
         return [c for c in self._conversations if c.project_id == project_id]
 
     def get_current_conversation(self) -> ConversationInfo | None:
+        """The conversation currently open in the desktop UI (execution truth).
+
+        Sourced from the app's own sidebar tab state, cross-checked against the
+        local conversation cache to attach a title when available.
+        """
         if not self._current_id:
             return None
         for c in self._conversations:
             if c.id == self._current_id:
-                return c
+                info = ConversationInfo(
+                    id=c.id,
+                    title=c.title,
+                    project_id=c.project_id,
+                    updated_at=c.updated_at,
+                    source=SOURCE_DESKTOP_ACTIVE,
+                    source_kind=SOURCE_DESKTOP_ACTIVE,
+                    is_current=True,
+                    is_verified=True,
+                    confidence=0.95,
+                )
+                return info
         # The open tab is an unsaved / not-yet-listed thread.
-        return ConversationInfo(id=self._current_id, title="", source=self.name)
+        return ConversationInfo(
+            id=self._current_id,
+            title="",
+            source=SOURCE_DESKTOP_ACTIVE,
+            source_kind=SOURCE_DESKTOP_ACTIVE,
+            is_current=True,
+            is_verified=False,
+            confidence=0.6,
+        )
 
     def get_by_id(self, conversation_id: str) -> ConversationInfo | None:
         for c in self._conversations:
             if c.id == conversation_id:
                 return c
         return None
+
+    def get_conversation_by_id(self, conversation_id: str) -> ConversationInfo | None:
+        return self.get_by_id(conversation_id)
+
+    def resolve_current_conversation(self, uia_title: str = "") -> ConversationInfo | None:
+        """Best-effort identity of the open conversation, combining the desktop
+        sidebar id with the UIA selected title.
+
+        Confidence drops (and verification is withdrawn) when the two signals
+        disagree or when the title is ambiguous - the caller must then refuse
+        to send rather than guess.
+        """
+        current = self.get_current_conversation()
+        if current is None:
+            return None
+
+        title = (uia_title or "").strip()
+        if not title:
+            # No UIA title: trust the sidebar id alone, with reduced confidence.
+            current.confidence = min(current.confidence, 0.5)
+            current.is_verified = False
+            return current
+
+        # Sidebar id maps to a cached conversation whose title matches UIA.
+        if current.title and current.title.strip() == title:
+            current.confidence = 0.95
+            current.is_verified = True
+            return current
+
+        # Sidebar id not in cache, but the UIA title uniquely maps to one
+        # cached conversation: that conversation is what is on screen.
+        matches = self.find_by_title(title)
+        if len(matches) == 1:
+            resolved = matches[0]
+            return ConversationInfo(
+                id=resolved.id,
+                title=resolved.title,
+                project_id=resolved.project_id,
+                updated_at=resolved.updated_at,
+                source=SOURCE_DESKTOP_ACTIVE,
+                source_kind=SOURCE_DESKTOP_ACTIVE,
+                is_current=True,
+                is_verified=True,
+                confidence=0.85,
+            )
+
+        # Ambiguous or unresolved title: do not guess.
+        current.confidence = 0.3
+        current.is_verified = False
+        return current
 
     def find_by_title(self, title: str) -> list[ConversationInfo]:
         """All conversations whose title matches exactly (whitespace-insensitive).

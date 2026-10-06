@@ -71,8 +71,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def build_daemon(cfg, *, controller_name: str | None = None, provider_name: str | None = None,
-                 store: StateStore | None = None) -> Daemon:
-    """Wire everything together. Exposed for tests."""
+                 store: StateStore | None = None, discovery=None, presets=None) -> Daemon:
+    """Wire everything together. Exposed for tests.
+
+    ``discovery`` and ``presets`` may be injected so a long-lived GUI service
+    shares the same instances the daemon uses (edits take effect immediately).
+    """
     _refuse_fake_when_not_dry_run(cfg)
     provider_name = provider_name or cfg.usage.provider
     controller_name = controller_name or "uia"
@@ -104,15 +108,23 @@ def build_daemon(cfg, *, controller_name: str | None = None, provider_name: str 
     sm = StateMachine(raw_state)
     guard = DuplicateGuard(store, cfg.resume.cooldown_minutes)
     retry = RetryManager(store, cfg.resume.max_retries, cfg.resume.retry_backoff_seconds)
-    discovery = None
-    try:
-        from app.discovery.provider import LocalChatGPTDiscoveryProvider
+    if discovery is None:
+        try:
+            from app.discovery.provider import LocalChatGPTDiscoveryProvider
 
-        discovery = LocalChatGPTDiscoveryProvider()
-    except Exception as exc:  # noqa: BLE001
-        log.debug("conversation discovery unavailable: %s", exc)
+            discovery = LocalChatGPTDiscoveryProvider()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("conversation discovery unavailable: %s", exc)
+    if presets is None:
+        try:
+            from app.prompts.manager import PromptPresetManager
+
+            presets = PromptPresetManager(cfg)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("prompt presets unavailable: %s", exc)
     resume_manager = ResumeManager(
-        cfg, store, controller, guard, retry, notifier, provider=provider, discovery=discovery
+        cfg, store, controller, guard, retry, notifier,
+        provider=provider, discovery=discovery, presets=presets,
     )
     health = HealthMonitor(cfg.health.heartbeat_seconds, cfg.health.max_consecutive_failures)
 

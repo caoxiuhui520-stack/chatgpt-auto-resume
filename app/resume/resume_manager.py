@@ -30,6 +30,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from app.config import AppConfig
     from app.discovery.provider import ConversationDiscoveryProvider
     from app.notification.base import Notifier
+    from app.prompts.manager import PromptPresetManager
     from app.usage.base import UsageProvider
 
 log = get_logger("resume")
@@ -46,6 +47,7 @@ class ResumeManager:
         notifier: "Notifier | None" = None,
         provider: "UsageProvider | None" = None,
         discovery: "ConversationDiscoveryProvider | None" = None,
+        presets: "PromptPresetManager | None" = None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -55,6 +57,7 @@ class ResumeManager:
         self.notifier = notifier
         self.provider = provider
         self.discovery = discovery
+        self.presets = presets
         self.last_result: ResumeResult | None = None
 
     # -- task lock ---------------------------------------------------------
@@ -187,6 +190,12 @@ class ResumeManager:
             self._finish(result)
             return result
 
+        # ---- prompt resolution (preset bound to the target conversation) --
+        # The preset for the target conversation wins over the static prompt;
+        # safe variables are rendered right before the send.
+        binding_id = self.cfg.target.conversation_id or current_id
+        prompt = self._resolve_prompt(prompt, binding_id, title, snapshot, now)
+
         # ---- send ---------------------------------------------------------
         if dry:
             log.info("DRY_RUN: Would send prompt (reset_id=%s)", fresh.reset_id)
@@ -274,6 +283,35 @@ class ResumeManager:
             return current.id if current else ""
         except Exception:  # noqa: BLE001
             return ""
+
+    def _resolve_prompt(
+        self,
+        fallback: str,
+        conversation_id: str,
+        title: str,
+        snapshot: UsageSnapshot,
+        now: datetime,
+    ) -> str:
+        """Render the bound preset (or default) with safe variables."""
+        if self.presets is None:
+            return fallback
+        context = {
+            "conversation_title": title,
+            "project_name": self.cfg.target.project_name,
+            "current_time": now.isoformat(),
+            "quota_reset_time": (
+                snapshot.five_hour_reset_at.isoformat() if snapshot.five_hour_reset_at else ""
+            ),
+            "last_resume_time": self.store.state.last_resume_time or "",
+        }
+        try:
+            prompt, _preset_id = self.presets.resolve_prompt(
+                conversation_id, fallback=fallback, context=context
+            )
+            return prompt
+        except Exception:  # noqa: BLE001 - preset failure must not block the send
+            log.exception("preset resolution failed; using fallback prompt")
+            return fallback
 
     def _notify_uncertain(self, message: str) -> None:
         if self.notifier is not None:

@@ -7,7 +7,7 @@ its own transaction type.
 
 from __future__ import annotations
 
-from app.resume.test_send import TestSendStore, run_test_send
+from app.resume.test_send import SendTestJournal, run_test_send
 from tests.test_gui import StubService  # noqa: F401  (reuse the stub shape)
 
 
@@ -72,7 +72,7 @@ class _FakeDiscovery:
 
 
 def _store(tmp_path):
-    return TestSendStore(tmp_path / "test_send.json")
+    return SendTestJournal(tmp_path / "test_send.json")
 
 
 def test_refused_without_target(tmp_path):
@@ -98,7 +98,7 @@ def test_passed_confirms_transaction(tmp_path):
     assert store.record["transaction_type"] == "test"
     assert ctrl.sent == ["AUTO RESUME TEST\n请只回复：OK"]
     # Reload from disk: durable.
-    reloaded = TestSendStore(tmp_path / "test_send.json")
+    reloaded = SendTestJournal(tmp_path / "test_send.json")
     assert reloaded.passed
 
 

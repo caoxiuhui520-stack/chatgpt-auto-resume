@@ -51,7 +51,7 @@ class TestSendResult:
         return asdict(self)
 
 
-class TestSendStore:
+class SendTestJournal:
     """Durable record of the last test send, isolated from the resume state."""
 
     def __init__(self, path: Path) -> None:
@@ -129,7 +129,7 @@ def run_test_send(
     controller: "ChatGptController",
     cfg: "AppConfig",
     discovery: "ConversationDiscoveryProvider | None",
-    store: TestSendStore,
+    store: SendTestJournal,
 ) -> TestSendResult:
     """Execute one supervised test send. Blocking; call from a worker thread."""
     from app.target import TargetResolver

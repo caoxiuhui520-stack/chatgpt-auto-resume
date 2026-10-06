@@ -22,6 +22,15 @@ class _StubDiscovery:
     def get_current_conversation(self):
         return None
 
+    def get_by_id(self, cid):
+        return None
+
+    def get_conversation_by_id(self, cid):
+        return None
+
+    def resolve_current_conversation(self, uia_title=""):
+        return None
+
     def find_by_title(self, title):
         return []
 
@@ -34,11 +43,27 @@ class _StubTestStore:
     record = {"status": "NONE"}
 
 
+class _StubPresets:
+    def list_presets(self):
+        return []
+
+    @property
+    def default_preset_id(self):
+        return "continue-default"
+
+    def get(self, pid):
+        return None
+
+    def set_binding(self, cid, pid):
+        pass
+
+
 class StubService:
     def __init__(self):
         self.cfg = AppConfig()
         self.discovery = _StubDiscovery()
         self.test_store = _StubTestStore()
+        self.presets = _StubPresets()
         self.started = False
 
     def start(self):
@@ -62,8 +87,9 @@ class StubService:
             five_hour_remaining_percent=42.0,
             weekly_remaining_percent=80.0,
             five_hour_reset_at="2026-10-07T10:00:00+00:00",
-            source="fake",
+            source="codex_app_server",
         )
+        s.provider_status = "ok"
         s.chatgpt_running = False
         s.discovery_available = True
         s.target_configured = False
@@ -72,8 +98,7 @@ class StubService:
         return s
 
     def set_target(self, **kw):
-        self.cfg.target.conversation_id = kw.get("conversation_id", "")
-        self.cfg.target.conversation_title = kw.get("conversation_title", "")
+        pass
 
     def clear_target(self):
         pass
@@ -87,24 +112,19 @@ class StubService:
     def apply(self, **kw):
         pass
 
+    def persist_config(self):
+        pass
+
     def arm(self, armed):
         self.cfg.real_send.armed = bool(armed)
 
     def set_dry_run(self, dry_run):
         self.cfg.dry_run = bool(dry_run)
 
-    def run_test_send(self):
-        from app.resume.test_send import TestSendResult
-
-        return TestSendResult(False, "refused", reason="stub")
-
 
 @pytest.fixture
-def service(tmp_path):
-    svc = StubService()
-    (tmp_path / "continue.txt").write_text("继续执行。", encoding="utf-8")
-    svc.cfg.resume.prompt_file = str(tmp_path / "continue.txt")
-    return svc
+def service():
+    return StubService()
 
 
 def test_main_window_constructs(service):
@@ -114,29 +134,51 @@ def test_main_window_constructs(service):
     from app.gui.main_window import MainWindow
 
     window = MainWindow(service)
-    assert window.stack.count() == 6
+    assert window.sidebar is not None
+    assert window.panel is not None
     window._on_status(service.snapshot())
     window._shutdown()
     window.deleteLater()
 
 
-def test_pages_refresh(service):
+def test_sidebar_renders_sources(service):
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
-    from app.gui.pages import DashboardPage, TargetPage, PromptPage
+    from app.discovery.models import ConversationInfo, SOURCE_DESKTOP_ACTIVE, SOURCE_CODEX_LOCAL_STORAGE
+    from app.gui.conversation_sidebar import ConversationSidebar
 
-    d = DashboardPage()
-    d.refresh(service.snapshot())
-    t = TargetPage(service)
-    t.reload_conversations()
-    t.refresh_status(service.snapshot())
-    p = PromptPage(service)
-    p.load_prompt()
-    assert p.editor.toPlainText() == "继续执行。"
-    d.deleteLater()
-    t.deleteLater()
-    p.deleteLater()
+    sb = ConversationSidebar()
+    convos = [
+        ConversationInfo(id="a", title="Current chat", source_kind=SOURCE_DESKTOP_ACTIVE),
+        ConversationInfo(id="b", title="Cached chat", source_kind=SOURCE_CODEX_LOCAL_STORAGE),
+    ]
+    sb.set_data(convos, current_id="a", target_id="a", matched=True)
+    assert sb.list.count() == 2
+    sb.deleteLater()
+
+
+def test_control_panel_test_send_gate(service):
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from app.gui.control_panel import ControlPanel
+
+    panel = ControlPanel(service)
+    status = service.snapshot()
+    status.target_configured = False
+    panel.refresh(status)
+    assert panel.test_send_btn.isEnabled() is False, "no target → Test Send disabled"
+
+    status.target_configured = True
+    status.target_match = {"status": "mismatch"}
+    panel.refresh(status)
+    assert panel.test_send_btn.isEnabled() is False, "mismatch → Test Send disabled"
+
+    status.target_match = {"status": "matched"}
+    panel.refresh(status)
+    assert panel.test_send_btn.isEnabled() is True, "matched → Test Send enabled"
+    panel.deleteLater()
 
 
 def test_target_resolver_is_id_primary():

@@ -1,40 +1,34 @@
-"""Main window, tray, first-run wizard and the GUI entry point."""
+"""Main window: left conversation sidebar + right unified control panel."""
 
 from __future__ import annotations
 
 import json
-import sys
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
-    QStackedWidget,
+    QSplitter,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
-    QSystemTrayIcon,
-    QMenu,
 )
 
-from app.config import PROJECT_ROOT
-from app.gui.pages import (
-    DashboardPage,
-    LogsPage,
-    NotificationsPage,
-    PromptPage,
-    SettingsPage,
-    TargetPage,
-)
+from app.gui import theme
+from app.gui.control_panel import ControlPanel
+from app.gui.conversation_sidebar import ConversationSidebar
 from app.gui.workers import PollWorker, TestSendWorker
+from app.gui.widgets import StatusBadge
 from app.service import AppService
 from app.status import AppStatus
 from app.utils.logging_setup import get_logger
@@ -47,7 +41,7 @@ def _app_icon() -> QIcon:
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor("#1f6fb2"))
+    p.setBrush(QColor("#3b82f6"))
     p.setPen(Qt.NoPen)
     p.drawEllipse(4, 4, 56, 56)
     p.setPen(QColor("white"))
@@ -58,81 +52,118 @@ def _app_icon() -> QIcon:
 
 
 class WizardDialog(QDialog):
-    """First-run safety wizard. Blocks real send until the test send passes."""
+    """First-run wizard: environment → quota → conversation → preset → review
+    → dry run → test send → arm."""
 
     def __init__(self, service: AppService, parent=None) -> None:
         super().__init__(parent)
         self.service = service
         self.setWindowTitle("ChatGPT Auto Resume — 首次配置")
-        self.resize(520, 460)
+        self.resize(560, 520)
+        self.setStyleSheet(theme.STYLESHEET)
 
         layout = QVBoxLayout(self)
         title = QLabel("首次运行向导")
-        title.setStyleSheet("font-size: 16px; font-weight: 700;")
+        title.setStyleSheet("font-size: 17px; font-weight: 700;")
         layout.addWidget(title)
 
         self.steps = QLabel("")
-        self.steps.setStyleSheet("font-family: Consolas; font-size: 12px; white-space: pre;")
+        self.steps.setStyleSheet("white-space: pre; font-size: 12.5px;")
         layout.addWidget(self.steps)
+
+        layout.addWidget(QLabel("选择目标对话："))
+        self.conv_combo = QComboBox()
+        self.conv_combo.setMinimumWidth(360)
+        layout.addWidget(self.conv_combo)
+
+        layout.addWidget(QLabel("选择续跑 Prompt："))
+        self.preset_combo = QComboBox()
+        layout.addWidget(self.preset_combo)
 
         self.test_btn = QPushButton("Run Supervised Test Send")
         self.test_btn.clicked.connect(self._run_test)
         layout.addWidget(self.test_btn)
-
         self.test_result = QLabel("Test send not run.")
         self.test_result.setWordWrap(True)
         layout.addWidget(self.test_result)
 
         self.finish_btn = QPushButton("Finish")
         self.finish_btn.clicked.connect(self._finish)
-        self.finish_btn.setEnabled(False)
         layout.addWidget(self.finish_btn)
 
-        self._refresh_steps()
-        # Keep the checklist current while the first polls land in the
-        # background (quota / ChatGPT state arrive asynchronously).
+        self._load_choices()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_steps)
         self._timer.start(2000)
+        self._refresh_steps()
+
+    def _load_choices(self) -> None:
+        self.service.discovery.refresh()
+        self.conv_combo.clear()
+        self._conversations = self.service.discovery.list_conversations()
+        for c in self._conversations:
+            self.conv_combo.addItem(f"{c.display_title}  ({c.short_id})", c.id)
+        self.preset_combo.clear()
+        for p in self.service.presets.list_presets():
+            self.preset_combo.addItem(p.name, p.id)
+        didx = self.preset_combo.findData(self.service.presets.default_preset_id)
+        if didx >= 0:
+            self.preset_combo.setCurrentIndex(didx)
+
+    def _selected_conversation(self):
+        cid = self.conv_combo.currentData()
+        for c in self._conversations:
+            if c.id == cid:
+                return c
+        return None
 
     def _refresh_steps(self) -> None:
         status = self.service.snapshot()
-        gpt = (
-            "running" if status.chatgpt_running is True
-            else "not running" if status.chatgpt_running is False
-            else "unknown"
-        )
+        gpt = ("running" if status.chatgpt_running is True
+               else "not running" if status.chatgpt_running is False else "unknown")
         lines = [
             f"1. Environment: Python OK | Codex {status.provider_status} | ChatGPT {gpt}",
-            f"2. Quota: 5h {_pct(status.usage.five_hour_remaining_percent if status.usage else None)} | weekly {_pct(status.usage.weekly_remaining_percent if status.usage else None)}",
-            f"3. Target: {'configured' if status.target_configured else 'NOT configured'}",
-            f"4. Prompt: {len(self.service.prompt_text())} chars",
+            f"2. Quota: 5h {self._pct(status.usage.five_hour_remaining_percent if status.usage else None)}",
+            f"3. Conversation: {'selected' if self.conv_combo.currentData() else 'NOT selected'}",
+            f"4. Prompt: {self.preset_combo.currentText() or 'NOT selected'}",
             f"5. Dry run: {'on' if status.dry_run else 'off'}",
             f"6. Test send: {'PASSED' if status.test_send_passed else 'not passed'}",
             f"7. Arm: {'ALLOWED' if status.test_send_passed else 'blocked until test passes'}",
         ]
         self.steps.setText("\n".join(lines))
-        self.finish_btn.setEnabled(True)
+        self.test_btn.setEnabled(bool(self.conv_combo.currentData()))
+
+    @staticmethod
+    def _pct(v) -> str:
+        return "?" if v is None else f"{v:.0f}%"
 
     def _run_test(self) -> None:
+        conv = self._selected_conversation()
+        if conv is None:
+            self.test_result.setText("Select a target conversation first.")
+            return
+        self.service.set_target(conversation_id=conv.id, conversation_title=conv.display_title)
+        preset_id = self.preset_combo.currentData()
+        if preset_id:
+            self.service.presets.set_default(preset_id)
         self.test_btn.setEnabled(False)
         self.test_result.setText("Running test send…")
-        self.test_result.setStyleSheet("color: #b35900;")
+        self.test_result.setStyleSheet(f"color: {theme.WAITING};")
         self.worker = TestSendWorker(self.service)
         self.worker.finished_ok.connect(self._on_test_done)
         self.worker.start()
 
     def _on_test_done(self, result) -> None:
-        self.test_btn.setEnabled(True)
+        self.test_btn.setEnabled(bool(self.conv_combo.currentData()))
         if result.ok:
             self.test_result.setText("Test Send Passed ✓  " + (result.confirmation or ""))
-            self.test_result.setStyleSheet("color: #1a7f37; font-weight: 700;")
+            self.test_result.setStyleSheet(f"color: {theme.READY}; font-weight: 700;")
         elif result.status == "uncertain":
-            self.test_result.setText("Test Send Uncertain — 无法确认，请人工检查后重试。")
-            self.test_result.setStyleSheet("color: #b35900;")
+            self.test_result.setText("Test Send Uncertain — 请人工检查后重试。")
+            self.test_result.setStyleSheet(f"color: {theme.WAITING};")
         else:
             self.test_result.setText(f"Test Send failed: {result.reason}")
-            self.test_result.setStyleSheet("color: #c62828;")
+            self.test_result.setStyleSheet(f"color: {theme.ERROR};")
         self._refresh_steps()
 
     def _finish(self) -> None:
@@ -145,184 +176,244 @@ class WizardDialog(QDialog):
         self.accept()
 
 
-def _pct(value) -> str:
-    return "?" if value is None else f"{value:.0f}%"
-
-
 class MainWindow(QMainWindow):
     def __init__(self, service: AppService) -> None:
         super().__init__()
         self.service = service
         self.setWindowTitle("ChatGPT Auto Resume")
         self.setWindowIcon(_app_icon())
-        self.resize(980, 680)
+        self.setStyleSheet(theme.STYLESHEET)
+        self.resize(1080, 720)
+        self.setMinimumSize(880, 560)
 
         central = QWidget()
-        root = QHBoxLayout(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
         self.setCentralWidget(central)
 
-        # Sidebar
-        self.nav = QListWidget()
-        self.nav.setFixedWidth(160)
-        for label in ("Overview", "Target", "Prompt", "Notifications", "Logs", "Settings"):
-            QListWidgetItem(label, self.nav)
-        root.addWidget(self.nav)
+        header = QWidget()
+        header.setStyleSheet(f"background: {theme.SURFACE_SOLID}; border-bottom: 1px solid {theme.CARD_BORDER};")
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(16, 10, 16, 10)
+        title = QLabel("ChatGPT Auto Resume")
+        title.setStyleSheet("font-weight: 700; font-size: 15px;")
+        hl.addWidget(title)
+        self.current_badge = QLabel("Current: —")
+        self.current_badge.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+        hl.addWidget(self.current_badge, 1)
+        self.mode_badge = StatusBadge("DRY RUN", "dry_run")
+        hl.addWidget(self.mode_badge)
+        root.addWidget(header)
 
-        # Stacked pages
-        self.stack = QStackedWidget()
-        self.dashboard = DashboardPage()
-        self.target_page = TargetPage(service)
-        self.prompt_page = PromptPage(service)
-        self.notify_page = NotificationsPage(service)
-        self.logs_page = LogsPage(service)
-        self.settings_page = SettingsPage(service)
-        for page in (
-            self.dashboard,
-            self.target_page,
-            self.prompt_page,
-            self.notify_page,
-            self.logs_page,
-            self.settings_page,
-        ):
-            self.stack.addWidget(page)
-        root.addWidget(self.stack, 1)
+        splitter = QSplitter(Qt.Horizontal)
+        self.sidebar = ConversationSidebar()
+        self.sidebar.setMinimumWidth(260)
+        self.sidebar.setMaximumWidth(380)
+        self.sidebar.setStyleSheet(f"background: {theme.SIDEBAR};")
+        self.panel = ControlPanel(service)
+        splitter.addWidget(self.sidebar)
+        splitter.addWidget(self.panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        root.addWidget(splitter, 1)
 
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self._wire()
 
-        # Wire page buttons
-        self.target_page.refresh_btn.clicked.connect(self.target_page.reload_conversations)
-        self.target_page.use_current_btn.clicked.connect(
-            lambda: self.target_page.use_current(self._last_status)
-        )
-        self.target_page.save_btn.clicked.connect(self.target_page.save)
-        self.target_page.clear_btn.clicked.connect(self.service.clear_target)
-        self.prompt_page.save_btn.clicked.connect(self.prompt_page.save)
-        self.prompt_page.reset_btn.clicked.connect(self.prompt_page.reset)
-        self.notify_page.save_btn.clicked.connect(self.notify_page.save)
-        self.notify_page.test_btn.clicked.connect(self.notify_page.test)
-        self.logs_page.refresh_btn.clicked.connect(self.logs_page.reload)
-        self.logs_page.open_btn.clicked.connect(self.logs_page.open_folder)
-        self.settings_page.save_btn.clicked.connect(self.settings_page.apply)
-
-        # Persistent action bar
-        bar = QWidget()
-        bar_layout = QHBoxLayout(bar)
-        self.test_send_btn = QPushButton("Test Real Send")
-        self.test_send_btn.clicked.connect(self._run_test_send)
-        self.arm_btn = QPushButton("Arm Real Send")
-        self.arm_btn.clicked.connect(self._arm)
-        self.test_result_label = QLabel("Test send: not run")
-        bar_layout.addWidget(self.test_send_btn)
-        bar_layout.addWidget(self.arm_btn)
-        bar_layout.addWidget(self.test_result_label, 1)
-        root.addWidget(bar)
-
-        self._last_status: AppStatus | None = None
-
-        # Tray
         self.tray = None
         self._setup_tray()
 
-        # Start polling in the background
+        self._last_status: AppStatus | None = None
+
         self.poll_worker = PollWorker(service)
         self.poll_worker.status_changed.connect(self._on_status)
         self.poll_worker.start()
 
-        # Initial page data
-        self.prompt_page.load_prompt()
-        self.logs_page.reload()
-        self.target_page.reload_conversations()
+        self._reload_conversations()
+        self.panel.load_settings()
+        self.panel.reload_presets()
 
-    # -- status ------------------------------------------------------------
+    def _wire(self) -> None:
+        self.sidebar.selection_changed.connect(self._on_conversation_selected)
+        self.sidebar.refresh_requested.connect(self._reload_conversations)
+        self.sidebar.use_current_requested.connect(self._use_current)
+        self.panel.set_target_requested.connect(self._set_target)
+        self.panel.use_current_requested.connect(self._use_current)
+        self.panel.bind_preset_requested.connect(self._bind_preset)
+        self.panel.test_send_requested.connect(self._run_test_send)
+        self.panel.arm_requested.connect(self._arm)
+        self.panel.disable_requested.connect(self._disable)
+        self.panel.save_config_requested.connect(self._save_config)
+        self.panel.dry_run_requested.connect(self._dry_run_once)
+        self.panel.open_chatgpt_requested.connect(self._open_chatgpt)
+        self.panel.open_logs_requested.connect(self._open_logs)
+        self.panel.refresh_requested.connect(self._refresh_all)
 
     def _on_status(self, status: AppStatus) -> None:
         self._last_status = status
-        self.dashboard.refresh(status)
-        self.target_page.refresh_status(status)
-        self.settings_page.refresh_status(status)
-        self._update_arm_button(status)
-        if self.tray is not None:
-            self.tray.setToolTip(
-                f"ChatGPT Auto Resume — {status.state} ({status.send_mode})"
-            )
+        self.panel.refresh(status)
+        self._refresh_sidebar(status)
 
-    def _update_arm_button(self, status: AppStatus) -> None:
+        current_label = status.active_conversation_title or status.current_conversation_id or "—"
+        self.current_badge.setText(f"Current: {current_label}")
         if status.send_mode == "armed":
-            self.arm_btn.setText("Disarm")
-            self.arm_btn.setEnabled(True)
-        elif status.test_send_passed:
-            self.arm_btn.setText("Arm Real Send")
-            self.arm_btn.setEnabled(True)
+            self.mode_badge.set_kind("ready")
+            self.mode_badge.setText("ARMED")
+        elif not status.dry_run:
+            self.mode_badge.set_kind("dry_run")
+            self.mode_badge.setText("REAL SEND (not armed)")
         else:
-            self.arm_btn.setText("Arm Real Send")
-            self.arm_btn.setEnabled(False)
-            self.arm_btn.setToolTip("必须先通过 Supervised Test Send。")
+            self.mode_badge.set_kind("dry_run")
+            self.mode_badge.setText("DRY RUN")
 
-    def _arm(self) -> None:
-        if self._last_status and self._last_status.send_mode == "armed":
-            self.service.arm(False)
-            self.service.set_dry_run(True)
-        else:
-            # Require a passed test send.
-            if not self.service.test_store.passed:
-                QMessageBox.warning(self, "Arm", "必须先通过 Supervised Test Send 才能 Arm。")
-                return
-            if not self.service.cfg.task_lock.enabled:
-                QMessageBox.warning(self, "Arm", "必须先启用 Task Lock。")
-                return
-            if not self.service.cfg.target.conversation_id and not self.service.cfg.target.conversation_title:
-                QMessageBox.warning(self, "Arm", "必须先配置目标对话。")
-                return
-            self.service.arm(True)
+    def _refresh_sidebar(self, status: AppStatus) -> None:
+        convos = self.service.discovery.list_conversations()
+        cur_id = status.current_conversation_id
+        target_id = (status.target or {}).get("conversation_id", "")
+        matched = (status.target_match or {}).get("status") == "matched"
+        if cur_id and not any(c.id == cur_id for c in convos):
+            from app.discovery.models import ConversationInfo, SOURCE_DESKTOP_ACTIVE
 
-    # -- test send ---------------------------------------------------------
+            convos.insert(0, ConversationInfo(
+                id=cur_id, title=status.active_conversation_title,
+                source_kind=SOURCE_DESKTOP_ACTIVE, is_current=True, is_verified=False,
+            ))
+        self.sidebar.set_data(convos, cur_id, target_id, matched)
+
+    def _on_conversation_selected(self, conversation_id: str) -> None:
+        conv = self.service.discovery.get_by_id(conversation_id)
+        title = conv.display_title if conv else conversation_id
+        self.panel.set_pending_target(conversation_id, title)
+
+    def _set_target(self, conversation_id: str) -> None:
+        conv = self.service.discovery.get_by_id(conversation_id)
+        title = conv.display_title if conv else ""
+        self.service.set_target(conversation_id=conversation_id, conversation_title=title)
+        self.panel.note.setText("已保存目标对话。")
+        self.panel.note.setStyleSheet(f"color: {theme.READY};")
+        self._refresh_all()
+
+    def _use_current(self) -> None:
+        status = self._last_status or self.service.snapshot()
+        cid = status.current_conversation_id
+        title = status.active_conversation_title
+        if not cid and not title:
+            self.panel.note.setText("无法确定当前打开的对话。")
+            self.panel.note.setStyleSheet(f"color: {theme.WAITING};")
+            return
+        self.service.set_target(conversation_id=cid, conversation_title=title)
+        self.panel.note.setText("已把当前对话设为目标。")
+        self.panel.note.setStyleSheet(f"color: {theme.READY};")
+        self._refresh_all()
+
+    def _bind_preset(self, conversation_id: str, preset_id: str) -> None:
+        self.service.presets.set_binding(conversation_id, preset_id)
+        self.panel.note.setText("已绑定 Preset 到该对话。")
+        self.panel.note.setStyleSheet(f"color: {theme.READY};")
+
+    def _save_config(self) -> None:
+        self.panel.apply_settings()
+        self.panel.note.setText("已保存配置。")
+        self.panel.note.setStyleSheet(f"color: {theme.READY};")
+
+    def _dry_run_once(self) -> None:
+        status = self.service.poll_once()
+        self._on_status(status)
+        self.panel.note.setText(f"Dry run tick done → state {status.state}.")
+        self.panel.note.setStyleSheet(f"color: {theme.MONITORING};")
+
+    def _open_chatgpt(self) -> None:
+        try:
+            from app.chatgpt.ui_controller import discover_chatgpt_exe
+
+            exe = discover_chatgpt_exe(self.service.cfg.chatgpt.exe_path)
+            if exe:
+                os.startfile(exe)  # type: ignore[attr-defined]
+            else:
+                QMessageBox.information(self, "ChatGPT", "未找到 ChatGPT Desktop 可执行文件。")
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "ChatGPT", f"无法打开：{exc}")
+
+    def _open_logs(self) -> None:
+        try:
+            os.startfile(str(self.service.cfg.log_dir))  # type: ignore[attr-defined]
+        except OSError:
+            pass
+
+    def _refresh_all(self) -> None:
+        self._reload_conversations()
+        self._on_status(self.service.snapshot())
+
+    def _reload_conversations(self) -> None:
+        try:
+            self.service.discovery.refresh()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("conversation refresh failed: %s", exc)
 
     def _run_test_send(self) -> None:
-        self.test_send_btn.setEnabled(False)
-        self.test_result_label.setText("Test send running…")
-        self.test_result_label.setStyleSheet("color: #b35900;")
+        self.panel.test_send_btn.setEnabled(False)
+        self.panel.note.setText("Test send running…")
+        self.panel.note.setStyleSheet(f"color: {theme.WAITING};")
         self.test_worker = TestSendWorker(self.service)
         self.test_worker.finished_ok.connect(self._on_test_result)
         self.test_worker.start()
 
     def _on_test_result(self, result) -> None:
-        self.test_send_btn.setEnabled(True)
         if result.ok:
-            self.test_result_label.setText("Test Send Passed ✓")
-            self.test_result_label.setStyleSheet("color: #1a7f37; font-weight: 700;")
+            self.panel.note.setText("Test Send Passed ✓")
+            self.panel.note.setStyleSheet(f"color: {theme.READY}; font-weight: 700;")
         elif result.status == "uncertain":
-            self.test_result_label.setText("Test Send Uncertain — 请人工检查")
-            self.test_result_label.setStyleSheet("color: #b35900;")
+            self.panel.note.setText("Test Send Uncertain — 请人工检查")
+            self.panel.note.setStyleSheet(f"color: {theme.WAITING};")
         else:
-            self.test_result_label.setText(f"Test Send failed: {result.reason}")
-            self.test_result_label.setStyleSheet("color: #c62828;")
-        # Refresh status so the arm button updates.
-        self._on_status(self.service.snapshot())
+            self.panel.note.setText(f"Test Send failed: {result.reason}")
+            self.panel.note.setStyleSheet(f"color: {theme.ERROR};")
+        self._refresh_all()
 
-    # -- tray --------------------------------------------------------------
+    def _arm(self) -> None:
+        if not self.service.test_store.passed:
+            QMessageBox.warning(self, "Arm", "必须先通过 Supervised Test Send 才能 Arm。")
+            return
+        if not self.service.cfg.task_lock.enabled:
+            QMessageBox.warning(self, "Arm", "必须先启用 Task Lock。")
+            return
+        if not (self.service.cfg.target.conversation_id or self.service.cfg.target.conversation_title):
+            QMessageBox.warning(self, "Arm", "必须先配置目标对话。")
+            return
+        box = QMessageBox.question(
+            self, "Arm Auto Resume",
+            "确认启用真实自动续跑？启用后额度恢复时程序会向目标对话真实发送 Prompt。",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if box == QMessageBox.Yes:
+            self.service.arm(True)
+            self._refresh_all()
+
+    def _disable(self) -> None:
+        self.service.arm(False)
+        self.service.set_dry_run(True)
+        self.panel.note.setText("已停用 Auto Resume（回到 Dry Run）。")
+        self.panel.note.setStyleSheet(f"color: {theme.MONITORING};")
+        self._refresh_all()
 
     def _setup_tray(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self.tray = QSystemTrayIcon(_app_icon(), self)
         menu = QMenu()
-        open_action = QAction("Open", self)
-        open_action.triggered.connect(self._show_window)
-        menu.addAction(open_action)
-
-        toggle_action = QAction("Enable/Disable Auto Resume", self)
-        toggle_action.triggered.connect(self._toggle_resume)
-        menu.addAction(toggle_action)
-
-        status_action = QAction("Status", self)
-        status_action.triggered.connect(self._show_status)
-        menu.addAction(status_action)
-
+        act_open = QAction("Open", self)
+        act_open.triggered.connect(self._show_window)
+        menu.addAction(act_open)
+        act_toggle = QAction("Enable/Disable Auto Resume", self)
+        act_toggle.triggered.connect(self._toggle_resume)
+        menu.addAction(act_toggle)
+        act_status = QAction("Status", self)
+        act_status.triggered.connect(self._show_status)
+        menu.addAction(act_status)
         menu.addSeparator()
-        exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self._quit)
-        menu.addAction(exit_action)
-
+        act_exit = QAction("Exit", self)
+        act_exit.triggered.connect(self.close)
+        menu.addAction(act_exit)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
@@ -336,22 +427,16 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _toggle_resume(self) -> None:
-        enabled = not self.service.cfg.resume.enabled
-        self.service.apply(**{"resume.enabled": enabled})
+        self.service.cfg.resume.enabled = not self.service.cfg.resume.enabled
+        self.service.persist_config()
 
     def _show_status(self) -> None:
         if self._last_status is None:
             return
         QMessageBox.information(
-            self,
-            "Status",
+            self, "Status",
             f"State: {self._last_status.state}\nMode: {self._last_status.send_mode}",
         )
-
-    def _quit(self) -> None:
-        self.close()
-
-    # -- close-to-tray -----------------------------------------------------
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self.tray is not None:
@@ -360,8 +445,7 @@ class MainWindow(QMainWindow):
             self.tray.showMessage(
                 "ChatGPT Auto Resume",
                 "仍在后台运行。右键托盘图标可退出。",
-                QSystemTrayIcon.Information,
-                3000,
+                QSystemTrayIcon.Information, 3000,
             )
             return
         self._shutdown()
@@ -374,9 +458,10 @@ class MainWindow(QMainWindow):
 
 
 def run_gui() -> int:
-    app = QApplication(sys.argv)
+    app = QApplication([])
     app.setApplicationName("ChatGPT Auto Resume")
     app.setStyle("Fusion")
+    app.setStyleSheet(theme.STYLESHEET)
 
     service = AppService()
     window = MainWindow(service)
@@ -387,6 +472,6 @@ def run_gui() -> int:
         wizard.exec()
 
     window.show()
-    exit_code = app.exec()
+    code = app.exec()
     service.stop()
-    return exit_code
+    return code

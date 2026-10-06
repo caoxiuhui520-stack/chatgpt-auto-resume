@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING
 from app.config import AppConfig, load_config, save_config
 from app.discovery.models import ConversationInfo
 from app.discovery.provider import LocalChatGPTDiscoveryProvider
-from app.resume.test_send import TestSendResult, TestSendStore, run_test_send
+from app.prompts.manager import PromptPresetManager
+from app.resume.test_send import TestSendResult, SendTestJournal, run_test_send
 from app.status import AppStatus, UsageView
 from app.target import TargetResolver
 from app.utils.logging_setup import get_logger
@@ -39,7 +40,8 @@ class AppService:
         self.cfg: AppConfig = load_config(config_path)
         self.daemon: "Daemon | None" = None
         self.discovery = LocalChatGPTDiscoveryProvider()
-        self.test_store = TestSendStore(Path(self.cfg.data_dir) / "test_send.json")
+        self.presets = PromptPresetManager(self.cfg)
+        self.test_store = SendTestJournal(Path(self.cfg.data_dir) / "test_send.json")
         self._started_at: float | None = None
         self._last_snapshot: AppStatus | None = None
 
@@ -52,7 +54,9 @@ class AppService:
         from app.main import build_daemon
 
         self.cfg = load_config(self.config_path)  # reload in case config changed
-        self.daemon = build_daemon(self.cfg)
+        self.daemon = build_daemon(
+            self.cfg, discovery=self.discovery, presets=self.presets
+        )
         self.daemon.store.load()
         self._started_at = time.monotonic()
         log.info("service started (dry_run=%s)", self.cfg.dry_run)
@@ -179,6 +183,10 @@ class AppService:
 
     def _persist(self) -> None:
         save_config(self.cfg, self.config_path or getattr(self.cfg, "_source_path", None))
+
+    def persist_config(self) -> None:
+        """Public alias so the GUI can persist the current config atomically."""
+        self._persist()
 
     def set_target(
         self,
