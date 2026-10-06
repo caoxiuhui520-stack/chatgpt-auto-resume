@@ -215,6 +215,8 @@ class ErrorKind:
     CHATGPT_BUSY = "chatgpt_busy"
     SEND_FAILED = "send_failed"
     TASK_LOCK_MISMATCH = "task_lock_mismatch"
+    FOCUS_UNVERIFIED = "focus_unverified"
+    SEND_UNCERTAIN = "send_uncertain"
     DRY_RUN = "dry_run"
     UNKNOWN = "unknown"
 
@@ -227,5 +229,14 @@ WAITABLE_ERRORS = frozenset(
         ErrorKind.CHATGPT_NOT_RUNNING,
         ErrorKind.WINDOW_NOT_FOUND,
         ErrorKind.TASK_LOCK_MISMATCH,
+    }
+)
+
+#: Errors after which a message may already be in the conversation. These
+#: must NEVER trigger an automatic retry - resending is worse than missing.
+UNCERTAIN_ERRORS = frozenset(
+    {
+        ErrorKind.SEND_UNCERTAIN,
+        ErrorKind.FOCUS_UNVERIFIED,
     }
 )

@@ -94,6 +94,17 @@ class FakeChatGptController(ChatGptController):
         self.sent_prompts.append(text)
         return ResumeResult(True, None, "fake: sent")
 
+    def verify_sent(self, timeout: float = 3.0) -> tuple[bool, str]:
+        # Scriptable: when fail_with is set the "send" already failed; a normal
+        # fake send is always positively confirmed. A test can force the
+        # uncertain path by setting ``self.confirmation = (False, reason)``.
+        confirmation = getattr(self, "confirmation", None)
+        if confirmation is not None:
+            return confirmation
+        if self.sent_prompts:
+            return True, "fake: confirmed"
+        return False, "fake: nothing was sent"
+
 
 @register("fake")
 def _build(cfg: "AppConfig") -> ChatGptController:

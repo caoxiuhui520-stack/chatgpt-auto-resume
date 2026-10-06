@@ -13,6 +13,17 @@ poll_interval_seconds: 30
 # logs for at least one full quota cycle.
 dry_run: true
 
+# Explicit arming for a real send, on top of dry_run. A real send is only
+# permitted when ALL of these hold:
+#   dry_run: false
+#   real_send.armed: true
+#   task_lock.enabled: true
+#   no fake provider is configured
+# The daemon prints REAL SEND ARMED when this is the case; otherwise it only
+# monitors. Do not set armed: true casually.
+real_send:
+  armed: false
+
 resume:
   enabled: true
   # Prompt file, relative to the project root unless absolute.
@@ -38,7 +49,11 @@ usage:
   # Primary provider: codex_app_server (verified, local JSON-RPC).
   provider: codex_app_server
   # Order of fallbacks attempted when the primary fails.
-  fallback_providers: ["codex_http", "fake"]
+  # SECURITY: "fake" must NEVER appear here in a production config. It is only
+  # allowed in tests, via an explicit --provider fake, or via
+  # AUTO_RESUME_SCENARIO. The daemon refuses to start a real send when a fake
+  # provider is configured.
+  fallback_providers: ["codex_http"]
   # Per-request timeout when talking to `codex app-server`.
   request_timeout_seconds: 15
   # Explicit codex executable path. Empty = auto-discover.

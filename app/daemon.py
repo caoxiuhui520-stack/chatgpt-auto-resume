@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from app.models import ErrorKind, UsageSnapshot, utcnow
+from app.models import ErrorKind, UNCERTAIN_ERRORS, UsageSnapshot, utcnow
 from app.notification.base import Event
 from app.state_machine import State, StateMachine, WorldFacts
 from app.utils.logging_setup import get_logger
@@ -341,6 +341,21 @@ class Daemon:
                 f"Continue prompt delivered to ChatGPT ({detail}).",
             )
             self.sm.force(State.COOLDOWN, "resume sent")
+            return
+
+        if result.error in UNCERTAIN_ERRORS:
+            # SEND_UNCERTAIN / FOCUS_UNVERIFIED: the prompt may already be in
+            # the conversation, or we refused to type because focus could not
+            # be proven. Either way there must be no automatic retry, and the
+            # retry budget must NOT be consumed (this is not a transient
+            # failure). The resume manager already persisted UNCERTAIN and
+            # notified; park in COOLDOWN until a genuinely new window arrives.
+            log.error(
+                "send uncertain (%s: %s); no automatic retry for this window",
+                result.error,
+                detail,
+            )
+            self.sm.force(State.COOLDOWN, "send uncertain - manual check required")
             return
 
         if result.error in (ErrorKind.CHATGPT_BUSY, ErrorKind.CHATGPT_NOT_RUNNING,

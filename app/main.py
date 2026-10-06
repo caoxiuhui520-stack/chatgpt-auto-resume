@@ -4,6 +4,7 @@
     python -m app.main once                # a single tick, prints what it decided
     python -m app.main usage               # print the current quota only
     python -m app.main doctor              # environment + configuration report
+    python -m app.main diagnose-ui         # passive UI snapshot (focus, composer, busy)
     python -m app.main install-autostart   # register the scheduled task
     python -m app.main uninstall-autostart # remove it (keeps config and logs)
     python -m app.main print-config        # dump the effective configuration
@@ -24,7 +25,7 @@ from app.chatgpt.base import build_controller
 from app.config import PROJECT_ROOT, config_as_dict, load_config
 from app.daemon import Daemon
 from app.models import utcnow
-from app.notification.base import build_notifier
+from app.notification.base import Event, build_notifier
 from app.resume.duplicate_guard import DuplicateGuard
 from app.resume.resume_manager import ResumeManager
 from app.resume.retry_manager import RetryManager
@@ -45,7 +46,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("command", nargs="?", default="run",
                         choices=["run", "once", "usage", "doctor", "print-config",
-                                 "install-autostart", "uninstall-autostart", "status"])
+                                 "install-autostart", "uninstall-autostart", "status",
+                                 "diagnose-ui"])
     parser.add_argument("--config", default=str(PROJECT_ROOT / "config.yaml"))
     parser.add_argument("--provider", default=None,
                         help="override usage.provider (codex_app_server | codex_http | fake)")
@@ -57,6 +59,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="allow real typing (config must also allow it)")
     parser.add_argument("--ticks", type=int, default=0,
                         help="for `once`: run N ticks instead of 1")
+    parser.add_argument("--label", default=None,
+                        help="for `diagnose-ui`: sample label (idle | busy | quota_exhausted)")
+    parser.add_argument("--save", action="store_true",
+                        help="for `diagnose-ui`: write the sample to diagnostics/<label>.json")
     parser.add_argument("--log-level", default=None)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args(argv)
@@ -65,6 +71,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def build_daemon(cfg, *, controller_name: str | None = None, provider_name: str | None = None,
                  store: StateStore | None = None) -> Daemon:
     """Wire everything together. Exposed for tests."""
+    _refuse_fake_when_not_dry_run(cfg)
     provider_name = provider_name or cfg.usage.provider
     controller_name = controller_name or "uia"
 
@@ -113,6 +120,49 @@ def _valid_state(name: str) -> bool:
         return False
 
 
+def _fake_configured(cfg) -> bool:
+    return cfg.usage.provider == "fake" or "fake" in cfg.usage.fallback_providers
+
+
+def _refuse_fake_when_not_dry_run(cfg) -> None:
+    """Hard stop: a fake provider must never drive a real send."""
+    if not cfg.dry_run and _fake_configured(cfg):
+        raise SystemExit(
+            "REFUSE TO START: a fake usage provider is configured while "
+            "dry_run=false. 'fake' is only allowed in tests, via an explicit "
+            "--provider fake, or via AUTO_RESUME_SCENARIO."
+        )
+
+
+def assess_send_mode(cfg) -> tuple[str, str]:
+    """Decide whether a real send is permitted.
+
+    Returns (mode, reason) where mode is ``"armed"`` or ``"monitor"``.
+
+    A fake provider with dry_run=false raises SystemExit - that is a
+    configuration error and must not silently degrade to monitor-only.
+    """
+    if cfg.dry_run:
+        return "monitor", "dry_run=true"
+    _refuse_fake_when_not_dry_run(cfg)
+    if not cfg.real_send.armed:
+        return "monitor", "real_send.armed=false"
+    if not cfg.task_lock.enabled:
+        return "monitor", "real_send.armed=true but task_lock.enabled=false"
+    return (
+        "armed",
+        "dry_run=false, real_send.armed=true, task_lock.enabled=true, no fake provider",
+    )
+
+
+REAL_SEND_BANNER = r"""
+======================================================================
+  R E A L   S E N D   A R M E D
+  The daemon may type into ChatGPT Desktop for real.
+======================================================================
+"""
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -151,6 +201,26 @@ def cmd_run(cfg, args) -> int:
     state = daemon.store.state
     state.restart_count += 1
     state.started_at = utcnow().isoformat()
+
+    # Crash recovery for the two-phase send transaction. A leftover PREPARED
+    # marker means the previous process was interrupted mid-send: the prompt
+    # may already be in the conversation. It must NEVER be resent
+    # automatically - mark the window UNCERTAIN and ask a human to look.
+    if state.has_prepared_send():
+        state.mark_pending_uncertain()
+        log.error(
+            "found an unfinished PREPARED send for window %s; marking UNCERTAIN",
+            state.pending_send_reset_id or "(unknown)",
+        )
+        try:
+            daemon.notifier.send(
+                Event.SEND_UNCERTAIN,
+                "Auto Resume 上次在发送过程中异常退出，无法确定提示词是否已经提交。"
+                "本窗口不会自动再次发送，请人工检查对话。",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     daemon.store.save()
     try:
         daemon.run_forever()
@@ -243,6 +313,26 @@ def cmd_print_config(cfg) -> int:
     return 0
 
 
+def cmd_diagnose_ui(cfg, args) -> int:
+    """Passive, read-only UI diagnostic. Never types and never moves focus."""
+    from app import diagnostics
+
+    report = diagnostics.collect_ui_diagnostics(cfg)
+    print(diagnostics.render_report(report))
+    if args.save:
+        label = args.label or "snapshot"
+        if label not in diagnostics.VALID_LABELS:
+            print(
+                f"--label must be one of {diagnostics.VALID_LABELS} when --save is used",
+                file=sys.stderr,
+            )
+            return 2
+        path = diagnostics.save_sample(report, label)
+        print(f"sample saved: {path}")
+    ok = bool(report.get("main_window"))
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     cfg = load_config(args.config)
@@ -276,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_once(cfg, args)
     if args.command == "doctor":
         return cmd_doctor(cfg)
+    if args.command == "diagnose-ui":
+        return cmd_diagnose_ui(cfg, args)
     if args.command == "status":
         return cmd_status(cfg)
     if args.command == "print-config":
@@ -291,6 +383,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if not cfg.resume.enabled:
         log.warning("resume.enabled is false: the daemon will monitor only, never send")
+
+    # Real-send gating. A real send requires dry_run=false AND
+    # real_send.armed=true AND task_lock.enabled=true AND no fake provider.
+    # Anything less degrades to monitor-only, so the daemon never sends by
+    # accident. assess_send_mode raises SystemExit on a fake provider with
+    # dry_run=false - that is a configuration error, not a runtime one.
+    mode, reason = assess_send_mode(cfg)
+    if mode == "armed":
+        print(REAL_SEND_BANNER)
+        log.warning("REAL SEND ARMED: %s", reason)
+    else:
+        log.info("monitor-only mode: %s", reason)
+        cfg.dry_run = True  # degrade: never send
+
     if not cfg.dry_run:
         log.warning(
             "DRY_RUN IS OFF. The daemon may type into ChatGPT Desktop. "

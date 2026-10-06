@@ -180,18 +180,83 @@ class ResumeManager:
             self._finish(result)
             return result
 
+        # ---- durable two-phase transaction --------------------------------
+        # An unfinished PREPARED transaction means a previous run may already
+        # have typed into the conversation. Never resend in that situation.
+        if self.store.state.has_prepared_send():
+            self.store.state.mark_pending_uncertain()
+            self.store.save()
+            self._notify_uncertain(
+                "上一次 Auto Resume 在发送过程中异常中断，无法确定提示词是否已经提交。"
+                "本窗口不会自动再次发送，请人工检查。"
+            )
+            result = ResumeResult(False, ErrorKind.SEND_UNCERTAIN, "previous PREPARED send")
+            self._finish(result)
+            return result
+
+        if self.store.state.has_uncertain_send():
+            # UNCERTAIN is per-window: a *new* quota window is a fresh chance,
+            # while the same window must never be retried.
+            if self.store.state.pending_send_reset_id == fresh.reset_id:
+                result = ResumeResult(
+                    False,
+                    ErrorKind.SEND_UNCERTAIN,
+                    "a previous send for THIS window is UNCERTAIN; refusing to resend",
+                )
+                self._finish(result)
+                return result
+            # New window: the stale UNCERTAIN marker belongs to an old cycle.
+            self.store.state.abort_pending_send()
+            self.store.save()
+            log.info("new quota window; cleared stale UNCERTAIN marker")
+
+        # Step 1: persist PREPARED before any keystroke is produced.
+        self.store.state.begin_pending_send(fresh.reset_id, now)
+        self.store.save()
+
         result = self.controller.send_prompt(prompt, dry_run=False)
-        if result.success:
-            self.guard.commit(fresh.reset_id, now)
+        if not result.success:
+            # The keystroke sequence never completed, so nothing was sent.
+            # Clearing the transaction lets the retry manager reschedule.
+            self.store.state.abort_pending_send()
+            self.store.save()
+            log.warning("resume attempt failed: %s - %s", result.error, result.detail)
+            self._finish(result)
+            return result
+
+        # Step 2: POST_SEND_VERIFY. "No exception" is not a confirmation.
+        confirmed, reason = self.controller.verify_sent()
+        if confirmed:
+            self.store.state.confirm_pending_send(now)
             self.store.state.resumed_count += 1
             self.store.save()
             self.retry.reset()
-            log.info("resume prompt sent successfully (reset_id=%s)", fresh.reset_id)
-        else:
-            log.warning("resume attempt failed: %s - %s", result.error, result.detail)
+            log.info("resume prompt sent and confirmed (%s)", reason)
+            result = ResumeResult(True, None, f"confirmed: {reason}")
+            self._finish(result)
+            return result
 
+        # Uncertain: the message may already be in the conversation. Do NOT
+        # retry - resending is strictly worse than missing once.
+        self.store.state.mark_pending_uncertain()
+        self.store.save()
+        self._notify_uncertain(
+            "Auto Resume 发送后无法确认提示词是否被 ChatGPT 接收。"
+            "本窗口不会自动再次发送，请人工检查。"
+        )
+        log.error("send uncertain, marked UNCERTAIN and not retrying: %s", reason)
+        result = ResumeResult(False, ErrorKind.SEND_UNCERTAIN, f"send uncertain: {reason}")
         self._finish(result)
         return result
+
+    def _notify_uncertain(self, message: str) -> None:
+        if self.notifier is not None:
+            try:
+                from app.notification.base import Event
+
+                self.notifier.send(Event.SEND_UNCERTAIN, message)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _finish(self, result: ResumeResult) -> None:
         self.last_result = result

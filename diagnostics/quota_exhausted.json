@@ -1,0 +1,95 @@
+{
+  "captured_at": "2026-10-06T18:37:59.870511+00:00",
+  "chatgpt_running": true,
+  "candidate_windows": [
+    {
+      "handle": 263796,
+      "title": "ChatGPT",
+      "pid": 18672,
+      "process_name": "ChatGPT.exe",
+      "minimized": false
+    },
+    {
+      "handle": 919518,
+      "title": "ChatGPT",
+      "pid": 18672,
+      "process_name": "ChatGPT.exe",
+      "minimized": false
+    }
+  ],
+  "main_window": {
+    "handle": 919518,
+    "title": "ChatGPT",
+    "pid": 18672,
+    "minimized": false,
+    "backgrounded_renderer": false
+  },
+  "focus": {
+    "foreground_hwnd": 264494,
+    "foreground_title": "Chat — Muse - Google Chrome",
+    "foreground_class": "Chrome_WidgetWin_1",
+    "foreground_is_target": false,
+    "focus_hwnd": 919518,
+    "focus_class": "Chrome_WidgetWin_1",
+    "focus_in_window_tree": true,
+    "uia_focused_control_type": "Window",
+    "uia_focused_name": "设置",
+    "uia_focused_automation_id": "radix-_r_os_"
+  },
+  "render_hwnd": 198644,
+  "render_tree_nodes": 1825,
+  "controls": {
+    "composer": {
+      "control_type": "Edit",
+      "name": "随心输入",
+      "automation_id": "",
+      "rect": [
+        805,
+        1119,
+        713,
+        44
+      ],
+      "enabled": true,
+      "keyboard_focusable": true,
+      "has_value_pattern": true,
+      "current_value": "随心输入\n"
+    },
+    "send_button": {
+      "control_type": "Button",
+      "name": "发送",
+      "automation_id": "",
+      "rect": [
+        1493,
+        1167,
+        29,
+        28
+      ],
+      "enabled": false,
+      "keyboard_focusable": false,
+      "has_value_pattern": false,
+      "current_value": "发送"
+    },
+    "stop_button_present": false
+  },
+  "busy_verdict": {
+    "busy": true,
+    "reason": "quota-exhausted text '你已达到使用上限'",
+    "evidence": [
+      "quota:你已达到使用上限"
+    ]
+  },
+  "conversation_title": "",
+  "focus_proof_passive": {
+    "proved": false,
+    "reason": "foreground window is 264494, not the ChatGPT window 919518",
+    "foreground_hwnd": 264494,
+    "foreground_ok": false,
+    "focus_hwnd": 0,
+    "focus_class": "",
+    "focus_in_window_tree": false,
+    "composer_located": false,
+    "composer_focused": false,
+    "uia_focused_control_type": "",
+    "uia_focused_name": ""
+  }
+}

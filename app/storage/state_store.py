@@ -29,6 +29,17 @@ SCHEMA_VERSION = 1
 MAX_TRIGGERED_HISTORY = 50
 
 
+class PendingSend:
+    """Status values for the durable two-phase send transaction."""
+
+    NONE = "NONE"
+    PREPARED = "PREPARED"
+    CONFIRMED = "CONFIRMED"
+    UNCERTAIN = "UNCERTAIN"
+
+    ALL = (NONE, PREPARED, CONFIRMED, UNCERTAIN)
+
+
 @dataclass
 class State:
     """Everything the daemon must remember across restarts."""
@@ -40,6 +51,16 @@ class State:
     last_triggered_reset_id: str = ""
     triggered_reset_ids: list[str] = field(default_factory=list)
     last_resume_time: str | None = None
+
+    # --- durable two-phase send transaction --------------------------------
+    # A real send is committed to disk as PREPARED *before* a single keystroke
+    # is produced. Only a positive post-send confirmation flips it to
+    # CONFIRMED. A crash that leaves PREPARED behind means "the message may
+    # already be in the conversation", and the next start must never resend -
+    # it marks the window UNCERTAIN and asks a human to look.
+    pending_send_reset_id: str = ""
+    pending_send_started_at: str | None = None
+    pending_send_status: str = PendingSend.NONE
 
     # --- retry bookkeeping -------------------------------------------------
     retry_count: int = 0
@@ -76,6 +97,39 @@ class State:
         if len(self.triggered_reset_ids) > MAX_TRIGGERED_HISTORY:
             self.triggered_reset_ids = self.triggered_reset_ids[-MAX_TRIGGERED_HISTORY:]
 
+    # -- two-phase send transaction -----------------------------------------
+
+    def begin_pending_send(self, reset_id: str, when: datetime) -> None:
+        """Step 1 of the transaction, persisted before any keystroke."""
+        self.pending_send_reset_id = reset_id
+        self.pending_send_started_at = when.isoformat()
+        self.pending_send_status = PendingSend.PREPARED
+
+    def confirm_pending_send(self, when: datetime) -> None:
+        """Step 3: a positive confirmation was observed after the send."""
+        self.mark_triggered(self.pending_send_reset_id, when)
+        self.pending_send_status = PendingSend.CONFIRMED
+        self.pending_send_reset_id = ""
+        self.pending_send_started_at = None
+
+    def abort_pending_send(self) -> None:
+        """The send was never produced (a classified failure before any
+        keystroke). The transaction is cleared so a retry is possible."""
+        self.pending_send_status = PendingSend.NONE
+        self.pending_send_reset_id = ""
+        self.pending_send_started_at = None
+
+    def mark_pending_uncertain(self) -> None:
+        """Keystrokes may or may not have been delivered. This is sticky: the
+        window is *not* marked as triggered, and the caller must NOT retry."""
+        self.pending_send_status = PendingSend.UNCERTAIN
+
+    def has_uncertain_send(self) -> bool:
+        return self.pending_send_status == PendingSend.UNCERTAIN
+
+    def has_prepared_send(self) -> bool:
+        return self.pending_send_status == PendingSend.PREPARED
+
     def reset_retry(self) -> None:
         self.retry_count = 0
         self.retry_reset_id = ""
@@ -88,6 +142,9 @@ class State:
             "last_triggered_reset_id": self.last_triggered_reset_id,
             "triggered_reset_ids": list(self.triggered_reset_ids),
             "last_resume_time": self.last_resume_time,
+            "pending_send_reset_id": self.pending_send_reset_id,
+            "pending_send_started_at": self.pending_send_started_at,
+            "pending_send_status": self.pending_send_status,
             "retry_count": self.retry_count,
             "retry_reset_id": self.retry_reset_id,
             "next_retry_at": self.next_retry_at,
@@ -106,6 +163,8 @@ class State:
         state = cls(**kwargs)
         if not isinstance(state.triggered_reset_ids, list):
             state.triggered_reset_ids = []
+        if state.pending_send_status not in PendingSend.ALL:
+            state.pending_send_status = PendingSend.NONE
         # A stale/incompatible schema is tolerated: unknown fields are dropped
         # and missing fields take defaults.
         state.schema_version = SCHEMA_VERSION

@@ -60,6 +60,14 @@ class ChatGptController(ABC):
     def send_prompt(self, text: str, *, dry_run: bool = True) -> ResumeResult:
         """Type and submit the prompt. Must honour ``dry_run`` absolutely."""
 
+    @abstractmethod
+    def verify_sent(self, timeout: float = 3.0) -> tuple[bool, str]:
+        """POST_SEND_VERIFY: positive evidence that the last send was delivered.
+
+        Returns (confirmed, reason). ``confirmed=False`` is SEND_UNCERTAIN and
+        must never be answered with an automatic retry.
+        """
+
     def start(self) -> bool:
         """Try to launch the app. Returns True if a window showed up."""
         return False

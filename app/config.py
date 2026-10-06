@@ -60,7 +60,23 @@ class TaskLockConfig:
     enabled: bool = False
     project: str = ""
     conversation: str = ""
+    # goal_hash is intentionally unsupported: the Electron client does not
+    # expose the conversation body, so a hash of the *title* would pretend to
+    # verify content it cannot see. The field is kept (ignored) so old configs
+    # still parse; see README.
     goal_hash: str = ""
+
+
+@dataclass
+class RealSendConfig:
+    """Explicit arming for a real send. Independent of dry_run.
+
+    A real send is only permitted when dry_run == false AND real_send.armed
+    == true AND task_lock.enabled == true AND no fake provider is configured.
+    Anything less degrades to monitor-only.
+    """
+
+    armed: bool = False
 
 
 @dataclass
@@ -113,6 +129,7 @@ class AppConfig:
     chatgpt: ChatGptConfig = field(default_factory=ChatGptConfig)
     usage: UsageConfig = field(default_factory=UsageConfig)
     task_lock: TaskLockConfig = field(default_factory=TaskLockConfig)
+    real_send: RealSendConfig = field(default_factory=RealSendConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     health: HealthConfig = field(default_factory=HealthConfig)

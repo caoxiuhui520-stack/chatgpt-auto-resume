@@ -26,6 +26,7 @@ class Event(str, Enum):
     RESUME_PREPARING = "resume_preparing"
     RESUME_SENT = "resume_sent"
     RESUME_FAILED = "resume_failed"
+    SEND_UNCERTAIN = "send_uncertain"
     MAX_RETRIES = "max_retries"
     EXCEPTION = "exception"
     RESTARTED = "restarted"
@@ -39,6 +40,7 @@ TITLES: dict[Event, str] = {
     Event.RESUME_PREPARING: "ChatGPT Auto Resume - preparing to resume",
     Event.RESUME_SENT: "ChatGPT Auto Resume - resumed",
     Event.RESUME_FAILED: "ChatGPT Auto Resume - resume failed",
+    Event.SEND_UNCERTAIN: "ChatGPT Auto Resume - send uncertain",
     Event.MAX_RETRIES: "ChatGPT Auto Resume - giving up",
     Event.EXCEPTION: "ChatGPT Auto Resume - error",
     Event.RESTARTED: "ChatGPT Auto Resume - restarted",

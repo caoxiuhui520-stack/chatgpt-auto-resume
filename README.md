@@ -64,12 +64,13 @@ config.yaml
                               ├─ process_detector  Win32 enumeration
                               ├─ window_controller UI Automation
                               ├─ work_detector     is_chatgpt_busy()
+                              ├─ focus_verifier    composer focus proof
                               └─ prompt_sender     UIA ▸ clipboard+Ctrl+V
 ```
 
 The whole decision surface is I/O-free and therefore unit-testable. The
 provider and the ChatGPT controller are both replaceable behind an interface
-(`UsageProvider`, `ChatGptController`), which is what lets 60 tests drive the
+(`UsageProvider`, `ChatGptController`), which is what lets 76 tests drive the
 **real** daemon with no Codex and no ChatGPT window.
 
 ---
@@ -159,23 +160,81 @@ correctly before setting `dry_run: false`.
 
 ### Never type into a busy app
 
-`is_chatgpt_busy()` is three-valued. `None` ("cannot tell") is treated as
-**busy**, because a false positive only costs a delayed resume while a false
-negative pastes a prompt into a running task. Busy/not-running/window-missing
-are *waitable*: they do not consume retry budget.
+`is_chatgpt_busy()` is three-valued and **evidence-based**: idle requires
+*positive* proof (composer present and enabled, a send button, and no busy
+evidence) — an empty accessibility tree is never "idle". Busy evidence
+includes the stop button, generation text, and the quota-exhausted label
+(`你已达到使用上限`). `None` ("cannot tell") is treated as **busy**, because a
+false positive only costs a delayed resume while a false negative pastes a
+prompt into a running task. Busy/not-running/window-missing are *waitable*:
+they do not consume retry budget.
 
 ### Two transports, in the prescribed order
 
-Measured on a real install: ChatGPT Desktop (Electron) publishes the outer
-`RootWebArea` but **not** the contenteditable composer, so
+Measured on a real install: ChatGPT Desktop keeps several top-level windows —
+a thin always-on overlay with ~10 accessibility nodes (no composer) and the
+real conversation window (>1000 nodes). The accessibility tree lives on the
+`Chrome_RenderWidgetHostHWND` **child** window, and the composer *is*
+addressable there: a wide `Edit` with a `ValuePattern` and the placeholder
+`随心输入`. The main window is therefore selected by "which window's render
+widget contains a composer", never by size or z-order.
 
-1. UI Automation `ValuePattern` is used when a composer is addressable;
-2. otherwise **clipboard + `Ctrl+V` + `Enter`** is used — guarded by a
-   *foreground-window verification* (`GetForegroundWindow() == hwnd`). If the
-   window cannot be proven to be in front, nothing is typed.
+1. UI Automation `ValuePattern` is used whenever a composer is addressable
+   (the submit uses the send button's `InvokePattern` first — no mouse);
+2. otherwise **clipboard + `Ctrl+V` + `Enter`** is used — guarded by *two*
+   proofs: the window is the foreground window **and** the composer provably
+   holds the keyboard focus (`focus_verifier.verify_composer_focus`: UIA
+   `CompareElements` after an explicit `set_focus`). If either proof fails,
+   the outcome is `FOCUS_UNVERIFIED` and nothing is typed.
 
 The send button is preferred over `Enter`; `Enter` is only the fallback. No
 screen coordinates are used anywhere.
+
+**Renderer reparenting (measured).** When the conversation window is
+backgrounded for a while, Chromium can reparent the render widget to a hidden
+helper window — the visible window becomes a dead shell while the full
+conversation tree stays alive in the background. As a last resort the
+controller scans *all* ChatGPT PIDs for such orphaned renderers. In that mode
+only UIA patterns are used (`mouse_safe=False`): the real mouse and keyboard
+are never touched.
+
+### Real-send arming (four conditions)
+
+A real send requires **all four** at once, otherwise the daemon silently
+degrades to monitor-only (`dry_run` is forced back on):
+
+```yaml
+dry_run: false
+real_send:
+  armed: true
+task_lock:
+  enabled: true
+# and: no fake provider anywhere (primary or fallback)
+```
+
+`REAL SEND ARMED` is printed at startup when all four hold. A fake provider
+combined with `dry_run: false` is a **configuration error** — the program
+refuses to start (exit, not warning).
+
+### Durable two-phase send transaction
+
+A real send is persisted to `data/state.json` as `PREPARED` (atomic write +
+fsync) **before a single keystroke is produced**. Only a positive post-send
+confirmation flips it to `CONFIRMED`:
+
+- crash before `PREPARED` → nothing happened; the next window may send;
+- crash after `PREPARED` (before/after the keystrokes, before the commit) →
+  the next start marks the window `UNCERTAIN` and **never auto-resends**;
+- `UNCERTAIN` is per-window: a genuinely new quota window is a fresh chance,
+  the same window is never retried.
+
+### Post-send verification
+
+"No exception from the keystroke" is not a confirmation. After submitting,
+the program looks for *positive* evidence (generation started: stop button /
+thinking text; or the composer is empty again) for a few seconds. No positive
+evidence ⇒ `SEND_UNCERTAIN`, a notification, and **no automatic retry** —
+resending is strictly worse than missing once.
 
 ### Optional task lock
 
@@ -187,7 +246,10 @@ task_lock:
 
 With the lock on, a resume is refused unless the on-screen conversation matches
 the configured project. An unreadable conversation title counts as a mismatch —
-it is that conservative on purpose.
+it is that conservative on purpose. The conversation title is taken **only**
+from the selected item in the sidebar list; there is deliberately no "first
+list item" fallback. (`goal_hash` is reserved and currently disabled — do not
+rely on it.)
 
 ---
 
@@ -229,9 +291,12 @@ chatgpt:
 
 usage:
   provider: codex_app_server
-  fallback_providers: ["codex_http", "fake"]
+  fallback_providers: ["codex_http"]   # never put "fake" here for real runs
   exhausted_threshold_percent: 100
   restored_threshold_percent: 99
+
+real_send:
+  armed: false                    # fourth arming condition; see "Real-send arming"
 
 notifications:
   windows: true
@@ -250,6 +315,9 @@ python -m app.main                     # run the daemon
 python -m app.main once --ticks 4      # N ticks, printing every decision
 python -m app.main usage               # current quota as JSON
 python -m app.main doctor              # environment + live diagnostics
+python -m app.main diagnose-ui         # passive UI snapshot: focus, composer, busy evidence
+python -m app.main diagnose-ui --label quota_exhausted --save
+                                       # ^ capture a redacted state sample to diagnostics/
 python -m app.main status              # persisted state
 python -m app.main print-config
 python -m app.main install-autostart
@@ -278,17 +346,18 @@ module and state:
 2026-10-07 08:12:14 INFO  chatgpt.sender prompt submitted via clipboard+ctrl-v+enter
 ```
 
-Never written to logs: credentials, cookies, auth tokens, Telegram bot tokens.
-Enforced by a `logging.Filter` (`app/utils/logging_setup.py`), not by
-convention — plus regex scrubbing for bearer tokens, JWTs and Telegram token
-shapes.
+Never written to logs: credentials, cookies, auth tokens, Telegram bot tokens,
+**or full email addresses** (account identifiers are masked to `c***@x.com`
+shape everywhere: logs, terminal diagnostics, Telegram, samples). Enforced by
+a `logging.Filter` (`app/utils/logging_setup.py`), not by convention — plus
+regex scrubbing for bearer tokens, JWTs and Telegram token shapes.
 
 ---
 
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q     # 60 tests
+.\.venv\Scripts\python.exe -m pytest tests -q     # 76 tests
 ```
 
 Coverage includes: every state-machine transition; ERROR being recoverable;
@@ -296,7 +365,11 @@ quota normal / exhausted / restored; **availability flapping inside one window
 must not fire**; ChatGPT busy, idle, unknown, not running; send failure →
 retry → give up; **a restart must not resend**; the same `reset_id` appearing
 twice; task-lock mismatch; provider failure and recovery; JSON-RPC payload
-parsing pinned to real captured data; state-file corruption and atomicity.
+parsing pinned to real captured data; state-file corruption and atomicity;
+**crash simulations for the two-phase send transaction** (crash before
+PREPARED / after PREPARED / immediately after Enter / before CONFIRMED /
+restart with UNCERTAIN — none may auto-resend); real-send arming (four
+conditions, fake-provider hard stop).
 
 ---
 
@@ -323,9 +396,11 @@ parsing pinned to real captured data; state-file corruption and atomicity.
 
 ## Status
 
-Phases 1–10 of the build brief are implemented and tested. Phase 11 (tray UI)
-is intentionally deferred — per the brief, it must not be allowed to delay the
-core daemon.
+Phases 1–10 of the build brief are implemented and tested, plus the
+real-send safety hardening round (two-phase send transaction, post-send
+verification, composer focus proof, positive-idle busy detection, real-send
+arming, email masking). Phase 11 (tray UI) is intentionally dropped — per the
+brief, it must not be allowed to delay the core daemon.
 
 | Phase | Scope | State |
 |---|---|---|
@@ -335,11 +410,12 @@ core daemon.
 | 4 | ChatGPT process / window detection | done |
 | 5 | `is_chatgpt_busy()` | done |
 | 6 | prompt sender with `DRY_RUN` | done |
-| 7 | real send (requires `dry_run: false`) | implemented, gated |
+| 7 | real send (requires `dry_run: false`) | implemented, gated & armed |
 | 8 | duplicate guard, retry, cooldown | done |
 | 9 | Windows + Telegram notifications | done |
 | 10 | Task Scheduler, install/uninstall scripts | done |
-| 11 | tray UI | deferred |
+| 11 | tray UI | dropped |
+| — | real-send safety hardening | done (`dry_run` stays `true` until approved) |
 
 ## Reference projects
 

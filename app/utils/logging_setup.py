@@ -42,6 +42,28 @@ REDACTED = "<redacted>"
 
 _configured = False
 
+_EMAIL_RE = re.compile(r"\b([A-Za-z0-9._%+-]{1,3})[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b")
+
+
+def mask_email(email: str) -> str:
+    """``caoxiuhui520@gmail.com`` -> ``cao***@gmail.com``.
+
+    Account identifiers are treated as secrets everywhere: terminal
+    diagnostics, Telegram messages, README output and GitHub issues must never
+    print a full address.
+    """
+    if "@" not in email:
+        return REDACTED
+    local, domain = email.split("@", 1)
+    if not local:
+        return f"***@{domain}"
+    head = local[:3] if len(local) >= 3 else local[:1]
+    return f"{head}***@{domain}"
+
+
+def _mask_emails(text: str) -> str:
+    return _EMAIL_RE.sub(lambda m: f"{m.group(1)}***@{m.group(2)}", text)
+
 
 class RedactFilter(logging.Filter):
     """Rewrites the formatted message, replacing anything secret-looking."""
@@ -51,6 +73,7 @@ class RedactFilter(logging.Filter):
         self.keys = tuple(k.lower() for k in keys)
 
     def _scrub_text(self, text: str) -> str:
+        text = _mask_emails(text)
         for pattern in _PATTERNS:
             text = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + REDACTED, text)
         for key in self.keys:

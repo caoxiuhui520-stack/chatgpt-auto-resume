@@ -125,9 +125,26 @@ def _paste_via_clipboard(box: Any, text: str) -> bool:
         return False
 
 
-def _click_send(controls: Any) -> bool:
+def _click_send(controls: Any, *, allow_mouse: bool = True) -> bool:
+    """Submit via the send button.
+
+    The UIA InvokePattern is tried first: it works on backgrounded windows
+    and never moves the real mouse. A physical ``click_input`` is only used
+    when ``allow_mouse`` permits it (a foreground-capable window).
+    """
     btn = getattr(controls, "send_button", None)
     if btn is None:
+        return False
+    try:
+        iface = btn.iface_invoke  # noqa: B010
+        if iface is not None:
+            iface.Invoke()
+            time.sleep(SEND_SETTLE_SECONDS)
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    if not allow_mouse:
+        log.warning("send button has no InvokePattern and the mouse is off-limits")
         return False
     try:
         btn.click_input()
@@ -164,10 +181,14 @@ def _keyboard_submit(hwnd: int, text: str, controls: Any) -> SendOutcome:
     install: Electron publishes the outer ``RootWebArea`` but not the
     contenteditable composer, so there is nothing to drive with ValuePattern.
 
-    Safety gate: the window must be *proven* to be in the foreground before a
-    single keystroke is sent. Otherwise the text would land in whatever window
-    happens to be focused.
+    Safety gates, both mandatory before a single keystroke is sent:
+
+    1. the window must be *proven* to be in the foreground, and
+    2. the composer must be *proven* to hold the keyboard focus
+       (``focus_verifier.verify_composer_focus``). Without (2) the text would
+       land in whatever window and control happens to be focused.
     """
+    from app.chatgpt.focus_verifier import verify_composer_focus
     from app.chatgpt.window_controller import activate_window
 
     if not _set_clipboard(text):
@@ -179,6 +200,21 @@ def _keyboard_submit(hwnd: int, text: str, controls: Any) -> SendOutcome:
             error="ChatGPT window could not be brought to the foreground; refusing to type",
             kind=ErrorKind.WINDOW_NOT_FOUND,
         )
+
+    proof = verify_composer_focus(
+        int(hwnd),
+        getattr(controls, "render_handle", 0) or 0,
+        composer=getattr(controls, "input_box", None),
+        render_widget=getattr(controls, "window", None),
+    )
+    if not proof.proved:
+        log.warning("keyboard fallback refused, focus not proven: %s", proof.reason)
+        return SendOutcome(
+            False,
+            error=f"composer focus could not be proven ({proof.reason})",
+            kind=ErrorKind.FOCUS_UNVERIFIED,
+        )
+    log.info("composer focus proven: %s", proof.reason)
 
     try:
         from pywinauto.keyboard import send_keys
@@ -210,6 +246,50 @@ def verify_sent(controls: Any) -> bool:
     """Best-effort confirmation: the composer should be empty again."""
     empty, _ = composer_state(controls)
     return empty
+
+
+def verify_send_confirmed(render_widget: Any, timeout: float = 3.0) -> tuple[bool, str]:
+    """POST_SEND_VERIFY - look for positive evidence that the message went out.
+
+    A submission is *not* confirmed by the mere absence of an exception from
+    the keystroke. Positive signals, in the order they usually appear:
+
+    1. the Stop button shows up / thinking text appears  (generation began)
+    2. the composer is empty again                       (it was submitted)
+
+    A quota-exhausted label is explicitly *not* a confirmation. Returns
+    (confirmed, reason); ``confirmed=False`` means SEND_UNCERTAIN, which the
+    caller must never answer with a retry.
+    """
+    from app.chatgpt.window_controller import locate, text_input_value
+    from app.chatgpt.work_detector import detect_busy
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.5)
+        try:
+            controls = locate(render_widget)
+        except Exception:  # noqa: BLE001
+            continue
+
+        verdict = detect_busy(render_widget, controls)
+        if verdict.busy is True:
+            generation_evidence = any(
+                e == "stop-button" or e.startswith(("stop:", "gen:"))
+                for e in verdict.evidence
+            )
+            if generation_evidence:
+                return True, f"generation started ({verdict.reason})"
+
+        if controls.input_box is not None:
+            try:
+                text = text_input_value(controls.input_box)
+            except Exception:  # noqa: BLE001
+                text = ""
+            if not text.strip() or _is_placeholder(text):
+                return True, "composer is empty again after submit"
+
+    return False, "no positive confirmation observed"
 
 
 def send_prompt(
@@ -258,6 +338,8 @@ def send_prompt(
         log.info("no addressable composer; using the clipboard+keyboard fallback")
         return _keyboard_submit(int(hwnd), text, controls)
 
+    mouse_safe = bool(getattr(controls, "mouse_safe", True))
+
     empty, current = composer_state(controls)
     if not empty and not allow_overwrite:
         return SendOutcome(
@@ -270,6 +352,13 @@ def send_prompt(
     if _paste_via_value_pattern(box, text):
         via = "uia-value-pattern"
     else:
+        if not mouse_safe:
+            return SendOutcome(
+                False,
+                error="composer has no ValuePattern and the keyboard is off-limits "
+                "on a backgrounded window",
+                kind=ErrorKind.SEND_FAILED,
+            )
         if not _paste_via_clipboard(box, text):
             return SendOutcome(
                 False, error="could not set the composer text", kind=ErrorKind.SEND_FAILED
@@ -279,9 +368,9 @@ def send_prompt(
     time.sleep(PASTE_SETTLE_SECONDS)
 
     # ---- submit ----------------------------------------------------------
-    if _click_send(controls):
+    if _click_send(controls, allow_mouse=mouse_safe):
         via += "+send-button"
-    elif _press_enter(controls):
+    elif mouse_safe and _press_enter(controls):
         via += "+enter"
     else:
         return SendOutcome(

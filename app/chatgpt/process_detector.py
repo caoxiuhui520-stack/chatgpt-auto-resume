@@ -166,6 +166,24 @@ def find_chatgpt_windows(
     return [info for _score, info in results]
 
 
+def find_chatgpt_pids(process_names: Iterable[str] = ("ChatGPT.exe",)) -> set[int]:
+    """All live PIDs whose executable name matches. ``set()`` on failure."""
+    wanted = {n.lower() for n in process_names if n}
+    pids: set[int] = set()
+    try:
+        import psutil  # type: ignore
+
+        for proc in psutil.process_iter(["name"]):
+            try:
+                if (proc.info.get("name") or "").lower() in wanted:
+                    pids.add(proc.pid)
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    return pids
+
+
 def is_process_running(process_names: Iterable[str] = ("ChatGPT.exe",)) -> bool:
     """Cheap process check that does not need any window enumeration."""
     wanted = {n.lower() for n in process_names if n}
