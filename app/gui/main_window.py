@@ -53,28 +53,38 @@ def _app_icon() -> QIcon:
 
 class WizardDialog(QDialog):
     """First-run wizard: environment → quota → conversation → preset → review
-    → dry run → test send → arm."""
+    → dry run → test send → arm. The main window is already visible behind it.
+    """
 
     def __init__(self, service: AppService, parent=None) -> None:
         super().__init__(parent)
         self.service = service
-        self.setWindowTitle("ChatGPT Auto Resume — 首次配置")
-        self.resize(560, 520)
+        self.setWindowTitle("首次配置向导 — 完成后进入主控台")
+        self.resize(640, 620)
         self.setStyleSheet(theme.STYLESHEET)
 
         layout = QVBoxLayout(self)
-        title = QLabel("首次运行向导")
+        title = QLabel("首次配置向导")
         title.setStyleSheet("font-size: 17px; font-weight: 700;")
         layout.addWidget(title)
+        hint = QLabel("主控台已在向导后面运行。完成以下步骤后点 Finish 进入。")
+        hint.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         self.steps = QLabel("")
         self.steps.setStyleSheet("white-space: pre; font-size: 12.5px;")
         layout.addWidget(self.steps)
 
-        layout.addWidget(QLabel("选择目标对话："))
+        layout.addWidget(QLabel("选择目标对话（列表来自 ChatGPT 桌面端本地数据）："))
         self.conv_combo = QComboBox()
-        self.conv_combo.setMinimumWidth(360)
+        self.conv_combo.setMinimumWidth(420)
         layout.addWidget(self.conv_combo)
+
+        self.use_current_btn = QPushButton("使用桌面端当前打开的对话")
+        self.use_current_btn.setProperty("flat", True)
+        self.use_current_btn.clicked.connect(self._select_current)
+        layout.addWidget(self.use_current_btn)
 
         layout.addWidget(QLabel("选择续跑 Prompt："))
         self.preset_combo = QComboBox()
@@ -87,7 +97,7 @@ class WizardDialog(QDialog):
         self.test_result.setWordWrap(True)
         layout.addWidget(self.test_result)
 
-        self.finish_btn = QPushButton("Finish")
+        self.finish_btn = QPushButton("Finish — 进入主控台")
         self.finish_btn.clicked.connect(self._finish)
         layout.addWidget(self.finish_btn)
 
@@ -101,6 +111,17 @@ class WizardDialog(QDialog):
         self.service.discovery.refresh()
         self.conv_combo.clear()
         self._conversations = self.service.discovery.list_conversations()
+        # The conversation actually open in the desktop UI goes first and is
+        # preselected - a first test send then matches immediately.
+        current = None
+        try:
+            current = self.service.discovery.get_current_conversation()
+        except Exception:  # noqa: BLE001
+            current = None
+        if current is not None:
+            label = f"[当前打开] {current.display_title or current.short_id}  ({current.short_id})"
+            self.conv_combo.addItem(label, current.id)
+            self._conversations = [c for c in self._conversations if c.id != current.id]
         for c in self._conversations:
             self.conv_combo.addItem(f"{c.display_title}  ({c.short_id})", c.id)
         self.preset_combo.clear()
@@ -109,6 +130,24 @@ class WizardDialog(QDialog):
         didx = self.preset_combo.findData(self.service.presets.default_preset_id)
         if didx >= 0:
             self.preset_combo.setCurrentIndex(didx)
+
+    def _select_current(self) -> None:
+        current = None
+        try:
+            self.service.discovery.refresh()
+            current = self.service.discovery.get_current_conversation()
+        except Exception:  # noqa: BLE001
+            pass
+        if current is None:
+            self.test_result.setText("无法确定桌面端当前打开的对话。")
+            self.test_result.setStyleSheet(f"color: {theme.WAITING};")
+            return
+        idx = self.conv_combo.findData(current.id)
+        if idx < 0:
+            self._load_choices()
+            idx = self.conv_combo.findData(current.id)
+        if idx >= 0:
+            self.conv_combo.setCurrentIndex(idx)
 
     def _selected_conversation(self):
         cid = self.conv_combo.currentData()
@@ -159,8 +198,15 @@ class WizardDialog(QDialog):
             self.test_result.setText("Test Send Passed ✓  " + (result.confirmation or ""))
             self.test_result.setStyleSheet(f"color: {theme.READY}; font-weight: 700;")
         elif result.status == "uncertain":
-            self.test_result.setText("Test Send Uncertain — 请人工检查后重试。")
+            self.test_result.setText("Test Send Uncertain — 无法确认是否送达，请到 ChatGPT 里人工检查后重试。")
             self.test_result.setStyleSheet(f"color: {theme.WAITING};")
+        elif result.status == "refused" and "mismatch" in (result.reason or ""):
+            self.test_result.setText(
+                "ChatGPT 桌面端当前打开的不是目标对话。\n"
+                "请先在 ChatGPT Desktop 里打开上面选中的对话，再点 Test Send。\n"
+                f"（{result.reason}）"
+            )
+            self.test_result.setStyleSheet(f"color: {theme.MISMATCH};")
         else:
             self.test_result.setText(f"Test Send failed: {result.reason}")
             self.test_result.setStyleSheet(f"color: {theme.ERROR};")
@@ -362,6 +408,11 @@ class MainWindow(QMainWindow):
         if result.ok:
             self.panel.note.setText("Test Send Passed ✓")
             self.panel.note.setStyleSheet(f"color: {theme.READY}; font-weight: 700;")
+        elif result.status == "refused" and "mismatch" in (result.reason or ""):
+            self.panel.note.setText(
+                "ChatGPT 桌面端当前打开的不是目标对话——请先在 ChatGPT Desktop 打开目标对话再测试。"
+            )
+            self.panel.note.setStyleSheet(f"color: {theme.MISMATCH};")
         elif result.status == "uncertain":
             self.panel.note.setText("Test Send Uncertain — 请人工检查")
             self.panel.note.setStyleSheet(f"color: {theme.WAITING};")
@@ -465,13 +516,15 @@ def run_gui() -> int:
 
     service = AppService()
     window = MainWindow(service)
+    # The main console must be visible immediately - the wizard (if any) is a
+    # modal layer on top of it, not a replacement for it.
+    window.show()
 
     wizard_file = Path(service.cfg.data_dir) / "wizard.json"
     if not wizard_file.exists():
         wizard = WizardDialog(service, window)
         wizard.exec()
 
-    window.show()
     code = app.exec()
     service.stop()
     return code

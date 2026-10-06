@@ -98,9 +98,12 @@ class ConversationSidebar(QWidget):
         layout.setContentsMargins(10, 12, 10, 12)
         layout.setSpacing(8)
 
-        title = QLabel("Conversations")
+        title = QLabel("Conversations · Desktop")
         title.setStyleSheet("font-weight: 700; font-size: 15px;")
         layout.addWidget(title)
+        src_hint = QLabel("来源：ChatGPT 桌面端本地数据")
+        src_hint.setStyleSheet(f"color: {theme.TEXT_FAINT}; font-size: 11px;")
+        layout.addWidget(src_hint)
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search conversations…")

@@ -9,6 +9,7 @@ silently ignored, so typos in config.yaml do not look like working config.
 from __future__ import annotations
 
 import copy
+import sys
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -19,9 +20,15 @@ from app.utils.logging_setup import get_logger
 
 log = get_logger("config")
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if getattr(sys, "frozen", False):  # PyInstaller exe: keep config/data next to the exe
+    PROJECT_ROOT = Path(sys.executable).resolve().parent
+    # Bundled read-only assets stay inside the _internal folder.
+    _BUNDLED_DIR = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    _BUNDLED_DIR = PROJECT_ROOT
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
-EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "config.example.yaml"
+EXAMPLE_CONFIG_PATH = _BUNDLED_DIR / "config.example.yaml"
 
 
 @dataclass

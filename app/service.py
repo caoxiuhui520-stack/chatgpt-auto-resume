@@ -199,8 +199,12 @@ class AppService:
         self.cfg.target.conversation_title = (conversation_title or "").strip()
         self.cfg.target.project_id = (project_id or "").strip()
         self.cfg.target.project_name = (project_name or "").strip()
-        # Choosing a target implies the task lock is wanted.
+        # Choosing a target implies the task lock is wanted, keyed by the
+        # structured identity - clear the legacy title-substring fields so
+        # they can never contradict the id-based match.
         self.cfg.task_lock.enabled = True
+        self.cfg.task_lock.project = ""
+        self.cfg.task_lock.conversation = ""
         self._persist()
 
     def clear_target(self) -> None:
