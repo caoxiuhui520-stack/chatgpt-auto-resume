@@ -1,0 +1,37 @@
+{
+  "scenarios": {
+    "A1_real_quota_read": {
+      "pass": true,
+      "detail": "5h=0.0 weekly=67.0 source=codex_app_server"
+    },
+    "A2_current_conversation": {
+      "pass": true,
+      "detail": "current id=019f6ed3-fd00-7cd1-b40a-a9452864a7e3"
+    },
+    "A3_conversation_list": {
+      "pass": true,
+      "detail": "21 conversations"
+    },
+    "A4_target_persists_restart": {
+      "pass": true,
+      "detail": "target id='019f6ed3-fd00-7cd1-b40a-a9452864a7e3' title=''"
+    },
+    "A5_target_matches": {
+      "pass": true,
+      "detail": "status=matched by=conversation_id"
+    },
+    "B_dry_run_no_real_input": {
+      "pass": true,
+      "detail": "rc=0 dry_run_seen=True"
+    },
+    "E_mismatch_refused": {
+      "pass": true,
+      "detail": "status=mismatch reason=open conversation id 019f6ed3-fd00-7cd1-b40a-a9452864a7e3 is not target 6ac526e4-1508-83ea-ba93-d1f98f95fccf"
+    },
+    "F_real_exhausted_waits": {
+      "pass": true,
+      "detail": "state=QUOTA_EXHAUSTED 5h=0.0 weekly=67.0 pending=NONE"
+    }
+  },
+  "all_pass": true
+}

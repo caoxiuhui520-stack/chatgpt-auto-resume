@@ -49,6 +49,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                                  "install-autostart", "uninstall-autostart", "status",
                                  "diagnose-ui", "gui"])
     parser.add_argument("--config", default=str(PROJECT_ROOT / "config.yaml"))
+    parser.add_argument("--state", default=None,
+                        help="override the state file path (default data/state.json)")
     parser.add_argument("--provider", default=None,
                         help="override usage.provider (codex_app_server | codex_http | fake)")
     parser.add_argument("--chatgpt", default=None,
@@ -90,8 +92,16 @@ def build_daemon(cfg, *, controller_name: str | None = None, provider_name: str 
     store.load()
 
     notifier = build_notifier(cfg)
-    sm = StateMachine(State(store.state.program_state)) if _valid_state(store.state.program_state) \
-        else StateMachine(State.STARTING)
+    raw_state = State(store.state.program_state) if _valid_state(store.state.program_state) \
+        else State.STARTING
+    # A persisted RESUMING state is mid-transaction: the previous process died
+    # between entering the resume and finishing it. The state machine has no
+    # self-exit from RESUMING on a cold start, so restart the evaluation from
+    # a clean slate (all safety gates re-run anyway).
+    if raw_state is State.RESUMING:
+        log.warning("persisted state was RESUMING (interrupted resume); restarting at STARTING")
+        raw_state = State.STARTING
+    sm = StateMachine(raw_state)
     guard = DuplicateGuard(store, cfg.resume.cooldown_minutes)
     retry = RetryManager(store, cfg.resume.max_retries, cfg.resume.retry_backoff_seconds)
     discovery = None
@@ -188,7 +198,16 @@ def cmd_usage(cfg) -> int:
 
 
 def cmd_once(cfg, args) -> int:
-    daemon = build_daemon(cfg, controller_name=args.chatgpt)
+    # Scenario isolation: an offline fake run must never write into the
+    # production state file (a fake "restoration" there would corrupt the
+    # real daemon's window bookkeeping).
+    state_path = Path(args.state) if args.state else None
+    if state_path is None and (args.provider or cfg.usage.provider) == "fake":
+        state_path = cfg.state_path.parent / "state-scenario.json"
+        log.info("fake provider run: isolating state file at %s", state_path)
+
+    store = StateStore(state_path) if state_path else None
+    daemon = build_daemon(cfg, controller_name=args.chatgpt, store=store)
     ticks = max(1, args.ticks)
     try:
         for index in range(ticks):
