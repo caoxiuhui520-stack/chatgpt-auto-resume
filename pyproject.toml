@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chatgpt-auto-resume"
-version = "0.1.0"
+version = "0.1.0-dev"
 description = "Monitor local Codex/ChatGPT usage quota and automatically resume an interrupted ChatGPT Desktop Work session after the quota window resets."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,6 +21,7 @@ classifiers = [
 dependencies = [
     "PyYAML>=6.0",
     "requests>=2.31",
+    "cramjam>=2.8",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +29,9 @@ windows = [
     "pywinauto>=0.6.8",
     "pywin32>=306",
     "winotify>=1.1.0",
+]
+gui = [
+    "PySide6>=6.5",
 ]
 tray = [
     "pystray>=0.19.5",
@@ -47,6 +51,8 @@ packages = [
     "app",
     "app.usage",
     "app.chatgpt",
+    "app.discovery",
+    "app.gui",
     "app.resume",
     "app.notification",
     "app.storage",

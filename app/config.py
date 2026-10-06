@@ -68,6 +68,21 @@ class TaskLockConfig:
 
 
 @dataclass
+class TargetConfig:
+    """The conversation the daemon must resume into.
+
+    ``conversation_id`` is the primary identity (stable, unambiguous). The
+    title fields are for display, diagnostics and fallback when no id is
+    known. Both empty means "no target configured" - a real send is refused.
+    """
+
+    project_id: str = ""
+    project_name: str = ""
+    conversation_id: str = ""
+    conversation_title: str = ""
+
+
+@dataclass
 class RealSendConfig:
     """Explicit arming for a real send. Independent of dry_run.
 
@@ -129,6 +144,7 @@ class AppConfig:
     chatgpt: ChatGptConfig = field(default_factory=ChatGptConfig)
     usage: UsageConfig = field(default_factory=UsageConfig)
     task_lock: TaskLockConfig = field(default_factory=TaskLockConfig)
+    target: TargetConfig = field(default_factory=TargetConfig)
     real_send: RealSendConfig = field(default_factory=RealSendConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -188,8 +204,17 @@ class AppConfig:
                 problems.append("telegram.enabled=true but telegram.bot_token is empty")
             if not self.notifications.telegram.chat_id:
                 problems.append("telegram.enabled=true but telegram.chat_id is empty")
-        if self.task_lock.enabled and not self.task_lock.project:
-            problems.append("task_lock.enabled=true but task_lock.project is empty")
+        if self.task_lock.enabled:
+            has_target = bool(
+                self.target.conversation_id
+                or self.target.conversation_title
+                or self.task_lock.project
+                or self.task_lock.conversation
+            )
+            if not has_target:
+                problems.append(
+                    "task_lock.enabled=true but no target conversation is configured"
+                )
         return problems
 
 
@@ -275,3 +300,43 @@ def config_as_dict(cfg: AppConfig) -> dict[str, Any]:
         return obj
 
     return convert(copy.deepcopy(cfg))
+
+
+def config_as_yaml(cfg: AppConfig) -> str:
+    """Serialise the effective config back to YAML (used for atomic writes)."""
+    return yaml.safe_dump(config_as_dict(cfg), allow_unicode=True, sort_keys=False)
+
+
+def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
+    """Atomically write ``cfg`` to ``path`` (tmp + validate + os.replace).
+
+    Guarantees the on-disk file is never half-written: a crash leaves either
+    the old file or the complete new one.
+    """
+    import os
+    import tempfile
+
+    target = Path(path) if path else Path(getattr(cfg, "_source_path", DEFAULT_CONFIG_PATH))
+    payload = config_as_yaml(cfg)
+    # Validate it parses back before replacing the real file.
+    try:
+        yaml.safe_load(payload)
+    except yaml.YAMLError as exc:  # pragma: no cover - defensive
+        raise ValueError(f"refusing to write invalid YAML: {exc}") from exc
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".config-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, target)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    log.info("config saved: %s", target)
+    return target

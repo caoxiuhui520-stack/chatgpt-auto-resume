@@ -28,6 +28,7 @@ from app.utils.logging_setup import get_logger
 if TYPE_CHECKING:  # pragma: no cover
     from app.chatgpt.base import ChatGptController
     from app.config import AppConfig
+    from app.discovery.provider import ConversationDiscoveryProvider
     from app.notification.base import Notifier
     from app.usage.base import UsageProvider
 
@@ -44,6 +45,7 @@ class ResumeManager:
         retry: RetryManager,
         notifier: "Notifier | None" = None,
         provider: "UsageProvider | None" = None,
+        discovery: "ConversationDiscoveryProvider | None" = None,
     ) -> None:
         self.cfg = cfg
         self.store = store
@@ -52,20 +54,31 @@ class ResumeManager:
         self.retry = retry
         self.notifier = notifier
         self.provider = provider
+        self.discovery = discovery
         self.last_result: ResumeResult | None = None
 
     # -- task lock ---------------------------------------------------------
 
-    def task_lock_ok(self, conversation_title: str) -> tuple[bool, str]:
+    def task_lock_ok(
+        self, conversation_title: str, current_id: str = ""
+    ) -> tuple[bool, str]:
         lock = self.cfg.task_lock
         if not lock.enabled:
             return True, "task lock disabled"
 
-        if not conversation_title:
-            # Conservative: with the lock on, an unreadable conversation is
-            # not permission to send.
-            return False, "task lock enabled but the active conversation title is unreadable"
+        # Prefer the structured target (conversation_id based) when present.
+        target = self.cfg.target
+        if target.conversation_id or target.conversation_title.strip():
+            from app.target import TargetResolver
 
+            match = TargetResolver().resolve(
+                target, current_id, conversation_title, self.discovery
+            )
+            return match.ok, match.reason
+
+        # Legacy behaviour: project / conversation substring match on title.
+        if not conversation_title:
+            return False, "task lock enabled but the active conversation title is unreadable"
         title = conversation_title.lower()
         if lock.project and lock.project.lower() not in title:
             return False, f"conversation {conversation_title!r} is not project {lock.project!r}"
@@ -132,10 +145,12 @@ class ResumeManager:
 
         # ---- task lock ----------------------------------------------------
         title = ""
+        current_id = ""
         if self.cfg.task_lock.enabled:
             self.controller.find_window()
             title = self.controller.conversation_title()
-        ok, why = self.task_lock_ok(title)
+            current_id = self._current_conversation_id()
+        ok, why = self.task_lock_ok(title, current_id)
         if not ok:
             result = ResumeResult(False, ErrorKind.TASK_LOCK_MISMATCH, why)
             self._finish(result)
@@ -248,6 +263,17 @@ class ResumeManager:
         result = ResumeResult(False, ErrorKind.SEND_UNCERTAIN, f"send uncertain: {reason}")
         self._finish(result)
         return result
+
+    def _current_conversation_id(self) -> str:
+        """The id of the conversation currently open in ChatGPT Desktop."""
+        if self.discovery is None:
+            return ""
+        try:
+            self.discovery.refresh()
+            current = self.discovery.get_current_conversation()
+            return current.id if current else ""
+        except Exception:  # noqa: BLE001
+            return ""
 
     def _notify_uncertain(self, message: str) -> None:
         if self.notifier is not None:

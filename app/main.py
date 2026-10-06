@@ -47,7 +47,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("command", nargs="?", default="run",
                         choices=["run", "once", "usage", "doctor", "print-config",
                                  "install-autostart", "uninstall-autostart", "status",
-                                 "diagnose-ui"])
+                                 "diagnose-ui", "gui"])
     parser.add_argument("--config", default=str(PROJECT_ROOT / "config.yaml"))
     parser.add_argument("--provider", default=None,
                         help="override usage.provider (codex_app_server | codex_http | fake)")
@@ -94,7 +94,16 @@ def build_daemon(cfg, *, controller_name: str | None = None, provider_name: str 
         else StateMachine(State.STARTING)
     guard = DuplicateGuard(store, cfg.resume.cooldown_minutes)
     retry = RetryManager(store, cfg.resume.max_retries, cfg.resume.retry_backoff_seconds)
-    resume_manager = ResumeManager(cfg, store, controller, guard, retry, notifier, provider=provider)
+    discovery = None
+    try:
+        from app.discovery.provider import LocalChatGPTDiscoveryProvider
+
+        discovery = LocalChatGPTDiscoveryProvider()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("conversation discovery unavailable: %s", exc)
+    resume_manager = ResumeManager(
+        cfg, store, controller, guard, retry, notifier, provider=provider, discovery=discovery
+    )
     health = HealthMonitor(cfg.health.heartbeat_seconds, cfg.health.max_consecutive_failures)
 
     return Daemon(
@@ -368,6 +377,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(cfg)
     if args.command == "diagnose-ui":
         return cmd_diagnose_ui(cfg, args)
+    if args.command == "gui":
+        from app.gui.main_window import run_gui
+
+        return run_gui()
     if args.command == "status":
         return cmd_status(cfg)
     if args.command == "print-config":

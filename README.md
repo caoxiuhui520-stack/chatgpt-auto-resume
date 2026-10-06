@@ -10,6 +10,42 @@ session resumes on its own.
 
 ---
 
+## Desktop control center (GUI)
+
+A PySide6 desktop app ships with the project - install, click, done. No YAML
+editing and no command line needed for daily use.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1     # once
+powershell -ExecutionPolicy Bypass -File scripts\start-gui.ps1   # every day
+```
+
+The window has six pages: **Overview** (quota, state, countdown, last resume),
+**Target** (pick the conversation to resume into), **Prompt**, **Notifications**,
+**Logs** and **Settings**. Closing the window minimises to the tray; the daemon
+keeps running.
+
+First run starts a wizard that walks through environment → target → prompt →
+**Supervised Test Send**. The test send uses the exact production transport
+(ValuePattern + InvokePattern, PREPARED fsync before input, POST_SEND_VERIFY)
+with a dedicated test prompt and its own transaction record, so it can never
+consume a real quota `reset_id`. **Real sends stay blocked until the test send
+has passed**, and the Arm button stays disabled until then.
+
+A standalone build is also available:
+
+```powershell
+.venv\Scripts\pyinstaller.exe scripts\ChatGPTAutoResume.spec --noconfirm --clean
+# → dist\ChatGPTAutoResume\ChatGPTAutoResume.exe
+```
+
+The GUI reads the conversation list from ChatGPT Desktop's **local** storage
+(read-only LevelDB) - no private web APIs, no cookies, no uploads. If a
+conversation title matches more than one conversation, the target is marked
+AMBIGUOUS and nothing is sent.
+
+---
+
 ## What it does / does not do
 
 **Does**
@@ -312,6 +348,7 @@ telegram:                         # top-level, matching the brief's sample
 
 ```powershell
 python -m app.main                     # run the daemon
+python -m app.main gui                 # desktop control center (same as scripts\start-gui.ps1)
 python -m app.main once --ticks 4      # N ticks, printing every decision
 python -m app.main usage               # current quota as JSON
 python -m app.main doctor              # environment + live diagnostics
@@ -357,7 +394,7 @@ regex scrubbing for bearer tokens, JWTs and Telegram token shapes.
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q     # 76 tests
+.\.venv\Scripts\python.exe -m pytest tests -q     # 103 tests
 ```
 
 Coverage includes: every state-machine transition; ERROR being recoverable;

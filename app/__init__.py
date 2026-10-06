@@ -8,5 +8,5 @@ The program never bypasses or extends any quota limit. It only resumes work
 *after* the provider reports fresh quota.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.0-dev"
 __all__ = ["__version__"]
