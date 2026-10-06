@@ -19,11 +19,11 @@ from app.gui.widgets import GlassCard, KVRow, SafetyChecklist, SettingRow, prima
 from app.status import AppStatus
 
 MATCH_LABEL = {
-    "matched": ("✓ Matched", theme.READY),
-    "mismatch": ("Target Mismatch", theme.MISMATCH),
-    "ambiguous": ("Ambiguous", theme.ERROR),
-    "unknown": ("Unknown", theme.WAITING),
-    "not_configured": ("Not configured", theme.NEUTRAL),
+    "matched": ("✓ 已匹配", theme.READY),
+    "mismatch": ("目标不匹配", theme.MISMATCH),
+    "ambiguous": ("目标不明确", theme.ERROR),
+    "unknown": ("未知", theme.WAITING),
+    "not_configured": ("未配置", theme.NEUTRAL),
 }
 
 
@@ -92,20 +92,20 @@ class ControlPanel(QWidget):
     # -- target card -------------------------------------------------------
 
     def _build_target_card(self) -> None:
-        card = GlassCard("Target & Runtime Status")
-        self.target_name = KVRow("Target")
-        self.current_name = KVRow("Current")
-        self.target_id = KVRow("Target ID")
-        self.current_id = KVRow("Current ID")
-        self.target_source = KVRow("Target source")
-        self.current_source = KVRow("Current source")
-        self.match_row = KVRow("Match")
+        card = GlassCard("目标与运行状态")
+        self.target_name = KVRow("目标对话")
+        self.current_name = KVRow("当前对话")
+        self.target_id = KVRow("目标 ID")
+        self.current_id = KVRow("当前 ID")
+        self.target_source = KVRow("目标来源")
+        self.current_source = KVRow("当前来源")
+        self.match_row = KVRow("匹配")
 
-        self.gpt_state = KVRow("ChatGPT Desktop")
-        self.quota_5h = KVRow("5h remaining")
-        self.quota_weekly = KVRow("Weekly remaining")
-        self.quota_reset = KVRow("Reset countdown")
-        self.daemon_state = KVRow("Daemon state")
+        self.gpt_state = KVRow("ChatGPT 桌面端")
+        self.quota_5h = KVRow("5 小时剩余")
+        self.quota_weekly = KVRow("每周剩余")
+        self.quota_reset = KVRow("重置倒计时")
+        self.daemon_state = KVRow("守护进程状态")
 
         for w in (self.target_name, self.current_name, self.target_id, self.current_id,
                   self.target_source, self.current_source, self.match_row, self.gpt_state,
@@ -113,9 +113,9 @@ class ControlPanel(QWidget):
             card.body().addWidget(w)
 
         btn_row = QHBoxLayout()
-        self.set_target_btn = primary_button("Set as Target")
+        self.set_target_btn = primary_button("设为目标")
         self.set_target_btn.clicked.connect(self._set_target)
-        self.use_current_btn = primary_button("Use Current Conversation", flat=True)
+        self.use_current_btn = primary_button("使用当前打开的对话", flat=True)
         self.use_current_btn.clicked.connect(self.use_current_requested.emit)
         btn_row.addWidget(self.set_target_btn)
         btn_row.addWidget(self.use_current_btn)
@@ -126,9 +126,9 @@ class ControlPanel(QWidget):
         bind_row = QHBoxLayout()
         self.bind_combo = QComboBox()
         self.bind_combo.setMinimumWidth(160)
-        self.bind_btn = primary_button("Bind Preset", flat=True)
+        self.bind_btn = primary_button("绑定 Preset", flat=True)
         self.bind_btn.clicked.connect(self._bind)
-        bind_row.addWidget(QLabel("Bind preset:"))
+        bind_row.addWidget(QLabel("绑定 Preset："))
         bind_row.addWidget(self.bind_combo, 1)
         bind_row.addWidget(self.bind_btn)
         card.body().addLayout(bind_row)
@@ -136,15 +136,15 @@ class ControlPanel(QWidget):
         self._layout.addWidget(card)
 
     def _build_settings_card(self) -> None:
-        card = GlassCard("Auto Resume Settings")
-        self.resume_toggle = self._toggle("Auto Resume", True)
-        self.dry_run_toggle = self._toggle("Dry Run", True)
-        self.task_lock_toggle = self._toggle("Task Lock", False)
-        self.armed_toggle = self._toggle("Real Send Armed", False)
-        self.autostart_toggle = self._toggle("Auto Start ChatGPT", True)
-        self.startup_toggle = self._toggle("Start with Windows", False)
-        self.win_notify_toggle = self._toggle("Windows Notification", True)
-        self.telegram_toggle = self._toggle("Telegram", False)
+        card = GlassCard("自动续跑设置")
+        self.resume_toggle = self._toggle("自动续跑", True)
+        self.dry_run_toggle = self._toggle("Dry Run（演练，不输入）", True)
+        self.task_lock_toggle = self._toggle("任务锁", False)
+        self.armed_toggle = self._toggle("真实发送（Armed）", False)
+        self.autostart_toggle = self._toggle("自动启动 ChatGPT", True)
+        self.startup_toggle = self._toggle("开机自启", False)
+        self.win_notify_toggle = self._toggle("Windows 通知", True)
+        self.telegram_toggle = self._toggle("Telegram 通知", False)
         for row in (self.resume_toggle, self.dry_run_toggle, self.task_lock_toggle,
                     self.armed_toggle, self.autostart_toggle, self.startup_toggle,
                     self.win_notify_toggle, self.telegram_toggle):
@@ -157,7 +157,7 @@ class ControlPanel(QWidget):
         return cb
 
     def _build_safety_card(self) -> None:
-        card = GlassCard("Safety & Send State")
+        card = GlassCard("安全检查与发送状态")
         self.checklist = SafetyChecklist()
         card.body().addWidget(self.checklist)
         self.pending_label = QLabel("")
@@ -166,12 +166,12 @@ class ControlPanel(QWidget):
         self._layout.addWidget(card)
 
     def _build_actions_card(self) -> None:
-        card = GlassCard("Actions")
-        self.test_send_btn = primary_button("Run Supervised Test Send")
+        card = GlassCard("操作")
+        self.test_send_btn = primary_button("运行监督式测试发送")
         self.test_send_btn.clicked.connect(self.test_send_requested.emit)
-        self.arm_btn = primary_button("Arm Auto Resume")
+        self.arm_btn = primary_button("启用自动续跑")
         self.arm_btn.clicked.connect(self.arm_requested.emit)
-        self.disable_btn = primary_button("Disable Auto Resume", danger=True)
+        self.disable_btn = primary_button("停用自动续跑", danger=True)
         self.disable_btn.clicked.connect(self.disable_requested.emit)
 
         card.body().addWidget(self.test_send_btn)
@@ -181,15 +181,15 @@ class ControlPanel(QWidget):
         card.body().addLayout(row1)
 
         row2 = QHBoxLayout()
-        self.save_btn = primary_button("Save Configuration", flat=True)
+        self.save_btn = primary_button("保存配置", flat=True)
         self.save_btn.clicked.connect(self.save_config_requested.emit)
-        self.dry_run_btn = primary_button("Run Dry Run", flat=True)
+        self.dry_run_btn = primary_button("运行演练（Dry Run）", flat=True)
         self.dry_run_btn.clicked.connect(self.dry_run_requested.emit)
-        self.open_chatgpt_btn = primary_button("Open ChatGPT", flat=True)
+        self.open_chatgpt_btn = primary_button("打开 ChatGPT", flat=True)
         self.open_chatgpt_btn.clicked.connect(self.open_chatgpt_requested.emit)
-        self.open_logs_btn = primary_button("Open Logs", flat=True)
+        self.open_logs_btn = primary_button("打开日志", flat=True)
         self.open_logs_btn.clicked.connect(self.open_logs_requested.emit)
-        self.refresh_btn = primary_button("Refresh", flat=True)
+        self.refresh_btn = primary_button("刷新", flat=True)
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)
         row2.addWidget(self.save_btn)
         row2.addWidget(self.dry_run_btn)
@@ -287,12 +287,12 @@ class ControlPanel(QWidget):
         self.current_id.set_value(status.current_conversation_id or "—")
 
         match = status.target_match or {}
-        mtext, mcolor = MATCH_LABEL.get(match.get("status", "not_configured"), ("Unknown", theme.NEUTRAL))
+        mtext, mcolor = MATCH_LABEL.get(match.get("status", "not_configured"), ("未知", theme.NEUTRAL))
         self.match_row.set_value(mtext, mcolor)
 
         # Runtime
         gpt = "Running" if status.chatgpt_running is True else \
-              "Not running" if status.chatgpt_running is False else "Unknown"
+              "Not running" if status.chatgpt_running is False else "未知"
         self.gpt_state.set_value(gpt, theme.READY if status.chatgpt_running else theme.NEUTRAL)
         if status.usage:
             self.quota_5h.set_value(_pct(status.usage.five_hour_remaining_percent))
@@ -325,18 +325,18 @@ class ControlPanel(QWidget):
         m = status.target_match or {}
         status_match = m.get("status", "not_configured")
         items = [
-            ("Codex connected", status.provider_status == "ok", ""),
-            ("Quota readable", status.usage is not None, ""),
-            ("ChatGPT Desktop detected", status.chatgpt_running is True, ""),
-            ("Target configured", status.target_configured, "Select a target conversation first."),
-            ("Target uniquely resolved", status_match in ("matched",), ""),
-            ("Current conversation matched", status_match == "matched",
-             "Open the configured target conversation before testing."),
-            ("Prompt selected", True, ""),
-            ("Test Send passed", status.test_send_passed, ""),
-            ("No pending UNCERTAIN transaction", status.pending_transaction != "UNCERTAIN", ""),
-            ("No fake provider", status.usage is None or status.usage.source != "fake", ""),
-            ("Task Lock enabled", bool((status.target or {}).get("conversation_id") or self.service.cfg.task_lock.enabled), ""),
+            ("Codex 已连接", status.provider_status == "ok", ""),
+            ("额度可读取", status.usage is not None, ""),
+            ("检测到 ChatGPT 桌面端", status.chatgpt_running is True, ""),
+            ("已配置目标", status.target_configured, "请先选择目标对话。"),
+            ("目标唯一解析", status_match in ("matched",), ""),
+            ("当前对话已匹配", status_match == "matched",
+             "请先在 ChatGPT Desktop 打开目标对话再测试。"),
+            ("已选择 Prompt", True, ""),
+            ("测试发送已通过", status.test_send_passed, ""),
+            ("无未决 UNCERTAIN 事务", status.pending_transaction != "UNCERTAIN", ""),
+            ("无 fake 数据源", status.usage is None or status.usage.source != "fake", ""),
+            ("任务锁已启用", bool((status.target or {}).get("conversation_id") or self.service.cfg.task_lock.enabled), ""),
         ]
         return items
 
@@ -345,10 +345,10 @@ class ControlPanel(QWidget):
         status_match = m.get("status", "not_configured")
         if not status.target_configured:
             self.test_send_btn.setEnabled(False)
-            self.test_send_btn.setToolTip("Select a target conversation first.")
+            self.test_send_btn.setToolTip("请先选择目标对话。")
         elif status_match == "mismatch":
             self.test_send_btn.setEnabled(False)
-            self.test_send_btn.setToolTip("Open the configured target conversation before testing.")
+            self.test_send_btn.setToolTip("请先在 ChatGPT Desktop 打开目标对话再测试。")
         elif status_match == "ambiguous":
             self.test_send_btn.setEnabled(False)
             self.test_send_btn.setToolTip("Target identity is ambiguous.")
@@ -358,12 +358,12 @@ class ControlPanel(QWidget):
 
     def _update_arm_gate(self, status: AppStatus) -> None:
         if status.send_mode == "armed":
-            self.arm_btn.setText("Armed ✓")
+            self.arm_btn.setText("已启用 ✓")
             self.arm_btn.setEnabled(False)
         elif status.test_send_passed and status.pending_transaction != "UNCERTAIN":
-            self.arm_btn.setText("Arm Auto Resume")
+            self.arm_btn.setText("启用自动续跑")
             self.arm_btn.setEnabled(True)
         else:
-            self.arm_btn.setText("Arm Auto Resume")
+            self.arm_btn.setText("启用自动续跑")
             self.arm_btn.setEnabled(False)
-            self.arm_btn.setToolTip("必须先通过 Supervised Test Send。")
+            self.arm_btn.setToolTip("必须先通过监督式测试发送。")

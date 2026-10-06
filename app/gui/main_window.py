@@ -76,7 +76,7 @@ class WizardDialog(QDialog):
         self.steps.setStyleSheet("white-space: pre; font-size: 12.5px;")
         layout.addWidget(self.steps)
 
-        layout.addWidget(QLabel("选择目标对话（列表来自 ChatGPT 桌面端本地数据）："))
+        layout.addWidget(QLabel("选择目标对话（来自桌面端本地数据）："))
         self.conv_combo = QComboBox()
         self.conv_combo.setMinimumWidth(420)
         layout.addWidget(self.conv_combo)
@@ -90,14 +90,14 @@ class WizardDialog(QDialog):
         self.preset_combo = QComboBox()
         layout.addWidget(self.preset_combo)
 
-        self.test_btn = QPushButton("Run Supervised Test Send")
+        self.test_btn = QPushButton("运行监督式测试发送")
         self.test_btn.clicked.connect(self._run_test)
         layout.addWidget(self.test_btn)
-        self.test_result = QLabel("Test send not run.")
+        self.test_result = QLabel("测试发送尚未运行。")
         self.test_result.setWordWrap(True)
         layout.addWidget(self.test_result)
 
-        self.finish_btn = QPushButton("Finish — 进入主控台")
+        self.finish_btn = QPushButton("完成 — 进入主控台")
         self.finish_btn.clicked.connect(self._finish)
         layout.addWidget(self.finish_btn)
 
@@ -158,16 +158,16 @@ class WizardDialog(QDialog):
 
     def _refresh_steps(self) -> None:
         status = self.service.snapshot()
-        gpt = ("running" if status.chatgpt_running is True
-               else "not running" if status.chatgpt_running is False else "unknown")
+        gpt = ("运行中" if status.chatgpt_running is True
+               else "未运行" if status.chatgpt_running is False else "未知")
         lines = [
-            f"1. Environment: Python OK | Codex {status.provider_status} | ChatGPT {gpt}",
-            f"2. Quota: 5h {self._pct(status.usage.five_hour_remaining_percent if status.usage else None)}",
-            f"3. Conversation: {'selected' if self.conv_combo.currentData() else 'NOT selected'}",
-            f"4. Prompt: {self.preset_combo.currentText() or 'NOT selected'}",
-            f"5. Dry run: {'on' if status.dry_run else 'off'}",
-            f"6. Test send: {'PASSED' if status.test_send_passed else 'not passed'}",
-            f"7. Arm: {'ALLOWED' if status.test_send_passed else 'blocked until test passes'}",
+            f"1. 环境：Python 正常 | Codex {status.provider_status} | ChatGPT {gpt}",
+            f"2. 额度：5 小时 {self._pct(status.usage.five_hour_remaining_percent if status.usage else None)}",
+            f"3. 对话：{'已选择' if self.conv_combo.currentData() else '未选择'}",
+            f"4. Prompt：{self.preset_combo.currentText() or '未选择'}",
+            f"5. Dry Run：{'开启' if status.dry_run else '关闭'}",
+            f"6. 测试发送：{'已通过' if status.test_send_passed else '未通过'}",
+            f"7. 启用：{'允许' if status.test_send_passed else '测试通过前禁止'}",
         ]
         self.steps.setText("\n".join(lines))
         self.test_btn.setEnabled(bool(self.conv_combo.currentData()))
@@ -179,14 +179,14 @@ class WizardDialog(QDialog):
     def _run_test(self) -> None:
         conv = self._selected_conversation()
         if conv is None:
-            self.test_result.setText("Select a target conversation first.")
+            self.test_result.setText("请先选择目标对话。")
             return
         self.service.set_target(conversation_id=conv.id, conversation_title=conv.display_title)
         preset_id = self.preset_combo.currentData()
         if preset_id:
             self.service.presets.set_default(preset_id)
         self.test_btn.setEnabled(False)
-        self.test_result.setText("Running test send…")
+        self.test_result.setText("正在运行测试发送…")
         self.test_result.setStyleSheet(f"color: {theme.WAITING};")
         self.worker = TestSendWorker(self.service)
         self.worker.finished_ok.connect(self._on_test_done)
@@ -195,10 +195,10 @@ class WizardDialog(QDialog):
     def _on_test_done(self, result) -> None:
         self.test_btn.setEnabled(bool(self.conv_combo.currentData()))
         if result.ok:
-            self.test_result.setText("Test Send Passed ✓  " + (result.confirmation or ""))
+            self.test_result.setText("测试发送已通过 ✓  " + (result.confirmation or ""))
             self.test_result.setStyleSheet(f"color: {theme.READY}; font-weight: 700;")
         elif result.status == "uncertain":
-            self.test_result.setText("Test Send Uncertain — 无法确认是否送达，请到 ChatGPT 里人工检查后重试。")
+            self.test_result.setText("测试发送结果不确定 — 无法确认是否送达，请到 ChatGPT 里人工检查后重试。")
             self.test_result.setStyleSheet(f"color: {theme.WAITING};")
         elif result.status == "refused" and "mismatch" in (result.reason or ""):
             self.test_result.setText(
@@ -208,7 +208,7 @@ class WizardDialog(QDialog):
             )
             self.test_result.setStyleSheet(f"color: {theme.MISMATCH};")
         else:
-            self.test_result.setText(f"Test Send failed: {result.reason}")
+            self.test_result.setText(f"测试发送失败：{result.reason}")
             self.test_result.setStyleSheet(f"color: {theme.ERROR};")
         self._refresh_steps()
 
@@ -245,10 +245,10 @@ class MainWindow(QMainWindow):
         title = QLabel("ChatGPT Auto Resume")
         title.setStyleSheet("font-weight: 700; font-size: 15px;")
         hl.addWidget(title)
-        self.current_badge = QLabel("Current: —")
+        self.current_badge = QLabel("当前：—")
         self.current_badge.setStyleSheet(f"color: {theme.TEXT_MUTED};")
         hl.addWidget(self.current_badge, 1)
-        self.mode_badge = StatusBadge("DRY RUN", "dry_run")
+        self.mode_badge = StatusBadge("演练 DRY RUN", "dry_run")
         hl.addWidget(self.mode_badge)
         root.addWidget(header)
 
@@ -301,16 +301,16 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar(status)
 
         current_label = status.active_conversation_title or status.current_conversation_id or "—"
-        self.current_badge.setText(f"Current: {current_label}")
+        self.current_badge.setText(f"当前：{current_label}")
         if status.send_mode == "armed":
             self.mode_badge.set_kind("ready")
-            self.mode_badge.setText("ARMED")
+            self.mode_badge.setText("已启用 ARMED")
         elif not status.dry_run:
             self.mode_badge.set_kind("dry_run")
-            self.mode_badge.setText("REAL SEND (not armed)")
+            self.mode_badge.setText("真实发送（未启用）")
         else:
             self.mode_badge.set_kind("dry_run")
-            self.mode_badge.setText("DRY RUN")
+            self.mode_badge.setText("演练 DRY RUN")
 
     def _refresh_sidebar(self, status: AppStatus) -> None:
         convos = self.service.discovery.list_conversations()
@@ -398,7 +398,7 @@ class MainWindow(QMainWindow):
 
     def _run_test_send(self) -> None:
         self.panel.test_send_btn.setEnabled(False)
-        self.panel.note.setText("Test send running…")
+        self.panel.note.setText("正在运行测试发送…")
         self.panel.note.setStyleSheet(f"color: {theme.WAITING};")
         self.test_worker = TestSendWorker(self.service)
         self.test_worker.finished_ok.connect(self._on_test_result)
@@ -406,7 +406,7 @@ class MainWindow(QMainWindow):
 
     def _on_test_result(self, result) -> None:
         if result.ok:
-            self.panel.note.setText("Test Send Passed ✓")
+            self.panel.note.setText("测试发送已通过 ✓")
             self.panel.note.setStyleSheet(f"color: {theme.READY}; font-weight: 700;")
         elif result.status == "refused" and "mismatch" in (result.reason or ""):
             self.panel.note.setText(
@@ -414,25 +414,25 @@ class MainWindow(QMainWindow):
             )
             self.panel.note.setStyleSheet(f"color: {theme.MISMATCH};")
         elif result.status == "uncertain":
-            self.panel.note.setText("Test Send Uncertain — 请人工检查")
+            self.panel.note.setText("测试发送结果不确定 — 请人工检查")
             self.panel.note.setStyleSheet(f"color: {theme.WAITING};")
         else:
-            self.panel.note.setText(f"Test Send failed: {result.reason}")
+            self.panel.note.setText(f"测试发送失败：{result.reason}")
             self.panel.note.setStyleSheet(f"color: {theme.ERROR};")
         self._refresh_all()
 
     def _arm(self) -> None:
         if not self.service.test_store.passed:
-            QMessageBox.warning(self, "Arm", "必须先通过 Supervised Test Send 才能 Arm。")
+            QMessageBox.warning(self, "启用", "必须先通过监督式测试发送才能启用。")
             return
         if not self.service.cfg.task_lock.enabled:
-            QMessageBox.warning(self, "Arm", "必须先启用 Task Lock。")
+            QMessageBox.warning(self, "启用", "必须先启用任务锁。")
             return
         if not (self.service.cfg.target.conversation_id or self.service.cfg.target.conversation_title):
-            QMessageBox.warning(self, "Arm", "必须先配置目标对话。")
+            QMessageBox.warning(self, "启用", "必须先配置目标对话。")
             return
         box = QMessageBox.question(
-            self, "Arm Auto Resume",
+            self, "启用自动续跑",
             "确认启用真实自动续跑？启用后额度恢复时程序会向目标对话真实发送 Prompt。",
             QMessageBox.Yes | QMessageBox.No,
         )
@@ -443,7 +443,7 @@ class MainWindow(QMainWindow):
     def _disable(self) -> None:
         self.service.arm(False)
         self.service.set_dry_run(True)
-        self.panel.note.setText("已停用 Auto Resume（回到 Dry Run）。")
+        self.panel.note.setText("已停用自动续跑（回到演练模式）。")
         self.panel.note.setStyleSheet(f"color: {theme.MONITORING};")
         self._refresh_all()
 
@@ -452,17 +452,17 @@ class MainWindow(QMainWindow):
             return
         self.tray = QSystemTrayIcon(_app_icon(), self)
         menu = QMenu()
-        act_open = QAction("Open", self)
+        act_open = QAction("打开", self)
         act_open.triggered.connect(self._show_window)
         menu.addAction(act_open)
-        act_toggle = QAction("Enable/Disable Auto Resume", self)
+        act_toggle = QAction("启用/停用自动续跑", self)
         act_toggle.triggered.connect(self._toggle_resume)
         menu.addAction(act_toggle)
-        act_status = QAction("Status", self)
+        act_status = QAction("状态", self)
         act_status.triggered.connect(self._show_status)
         menu.addAction(act_status)
         menu.addSeparator()
-        act_exit = QAction("Exit", self)
+        act_exit = QAction("退出", self)
         act_exit.triggered.connect(self.close)
         menu.addAction(act_exit)
         self.tray.setContextMenu(menu)
@@ -486,7 +486,7 @@ class MainWindow(QMainWindow):
             return
         QMessageBox.information(
             self, "Status",
-            f"State: {self._last_status.state}\nMode: {self._last_status.send_mode}",
+            f"状态：{self._last_status.state}\n模式：{self._last_status.send_mode}",
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802

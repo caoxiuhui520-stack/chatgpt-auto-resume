@@ -72,12 +72,12 @@ class ConversationRow(QWidget):
         badges.setSpacing(2)
         badges.setAlignment(Qt.AlignRight)
         if is_current:
-            b = QLabel("Current")
+            b = QLabel("当前")
             b.setStyleSheet(f"color: white; background: {theme.MONITORING}; padding: 1px 6px;"
                             "border-radius: 4px; font-size: 10px; font-weight: 700;")
             badges.addWidget(b)
         if is_target:
-            b = QLabel("Target")
+            b = QLabel("目标")
             b.setStyleSheet(f"color: white; background: {theme.DRY_RUN}; padding: 1px 6px;"
                             "border-radius: 4px; font-size: 10px; font-weight: 700;")
             badges.addWidget(b)
@@ -98,7 +98,7 @@ class ConversationSidebar(QWidget):
         layout.setContentsMargins(10, 12, 10, 12)
         layout.setSpacing(8)
 
-        title = QLabel("Conversations · Desktop")
+        title = QLabel("对话 · 桌面端")
         title.setStyleSheet("font-weight: 700; font-size: 15px;")
         layout.addWidget(title)
         src_hint = QLabel("来源：ChatGPT 桌面端本地数据")
@@ -106,7 +106,7 @@ class ConversationSidebar(QWidget):
         layout.addWidget(src_hint)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search conversations…")
+        self.search.setPlaceholderText("搜索对话…")
         self.search.textChanged.connect(self._apply_filter)
         layout.addWidget(self.search)
 
@@ -116,10 +116,10 @@ class ConversationSidebar(QWidget):
         layout.addWidget(self.list, 1)
 
         actions = QHBoxLayout()
-        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn = QPushButton("刷新")
         self.refresh_btn.setProperty("flat", True)
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)
-        self.use_current_btn = QPushButton("Use Current")
+        self.use_current_btn = QPushButton("用当前对话")
         self.use_current_btn.setProperty("flat", True)
         self.use_current_btn.clicked.connect(self.use_current_requested.emit)
         actions.addWidget(self.refresh_btn)

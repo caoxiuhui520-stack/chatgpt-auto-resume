@@ -68,12 +68,12 @@ def source_color(kind: str) -> str:
 
 def source_label(kind: str) -> str:
     return {
-        "desktop_active": "Desktop",
-        "codex_work_session": "Work",
-        "desktop_cache": "Cache",
-        "codex_local_storage": "Web Cache",
-        "web_cache": "Web Cache",
-        "unknown": "Unverified",
+        "desktop_active": "桌面",
+        "codex_work_session": "工作",
+        "desktop_cache": "缓存",
+        "codex_local_storage": "网页缓存",
+        "web_cache": "网页缓存",
+        "unknown": "未验证",
     }.get(kind, kind)
 
 

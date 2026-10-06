@@ -33,7 +33,7 @@ class PromptPanel(QWidget):
         root.setSpacing(10)
 
         # --- preset selector card ---
-        card = GlassCard("Prompt Preset")
+        card = GlassCard("续跑 Prompt 预设")
         row = QHBoxLayout()
         self.preset_combo = QComboBox()
         self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
@@ -45,23 +45,23 @@ class PromptPanel(QWidget):
         self.fav_btn.clicked.connect(self._toggle_favorite)
         row.addWidget(self.fav_btn)
 
-        self.dup_btn = QPushButton("Duplicate")
+        self.dup_btn = QPushButton("复制")
         self.dup_btn.setProperty("flat", True)
         self.dup_btn.clicked.connect(self._duplicate)
         row.addWidget(self.dup_btn)
 
-        self.new_btn = QPushButton("+ New")
+        self.new_btn = QPushButton("＋ 新建")
         self.new_btn.setProperty("flat", True)
         self.new_btn.clicked.connect(self._new)
         row.addWidget(self.new_btn)
 
-        self.del_btn = QPushButton("Delete")
+        self.del_btn = QPushButton("删除")
         self.del_btn.setProperty("flat", True)
         self.del_btn.setProperty("danger", True)
         self.del_btn.clicked.connect(self._delete)
         row.addWidget(self.del_btn)
 
-        self.default_btn = QPushButton("Set Default")
+        self.default_btn = QPushButton("设为默认")
         self.default_btn.setProperty("flat", True)
         self.default_btn.clicked.connect(self._set_default)
         row.addWidget(self.default_btn)
@@ -74,11 +74,11 @@ class PromptPanel(QWidget):
         root.addWidget(card)
 
         # --- editor card ---
-        editor = GlassCard("Prompt Editor")
+        editor = GlassCard("Prompt 编辑器")
         self.name_edit = QLineEdit()
-        editor.body().addWidget(QLabel("Name"))
+        editor.body().addWidget(QLabel("名称"))
         editor.body().addWidget(self.name_edit)
-        editor.body().addWidget(QLabel("Description"))
+        editor.body().addWidget(QLabel("描述"))
         self.desc_edit = QLineEdit()
         editor.body().addWidget(self.desc_edit)
 
@@ -87,7 +87,7 @@ class PromptPanel(QWidget):
         editor.body().addWidget(self.content_edit)
 
         meta_row = QHBoxLayout()
-        self.count_label = QLabel("0 chars")
+        self.count_label = QLabel("0 字")
         self.count_label.setStyleSheet(f"color: {theme.TEXT_FAINT};")
         self.modified_label = QLabel("")
         self.modified_label.setStyleSheet(f"color: {theme.TEXT_FAINT};")
@@ -99,13 +99,13 @@ class PromptPanel(QWidget):
         editor.body().addLayout(meta_row)
 
         btn_row = QHBoxLayout()
-        self.save_btn = primary_button("Save")
+        self.save_btn = primary_button("保存")
         self.save_btn.clicked.connect(self._save)
-        self.saveas_btn = primary_button("Save As", flat=True)
+        self.saveas_btn = primary_button("另存为", flat=True)
         self.saveas_btn.clicked.connect(self._save_as)
-        self.reset_btn = primary_button("Restore Built-in", flat=True)
+        self.reset_btn = primary_button("恢复内置", flat=True)
         self.reset_btn.clicked.connect(self._reset)
-        self.test_btn = primary_button("Test Prompt", flat=True)
+        self.test_btn = primary_button("测试 Prompt", flat=True)
         self.test_btn.clicked.connect(self._test)
         btn_row.addWidget(self.save_btn)
         btn_row.addWidget(self.saveas_btn)
@@ -128,7 +128,7 @@ class PromptPanel(QWidget):
         for p in self._presets.list_presets():
             label = f"{'★ ' if p.favorite else ''}{p.name}"
             if p.id == self._presets.default_preset_id:
-                label += "  (default)"
+                label += "（默认）"
             self.preset_combo.addItem(label, p.id)
         self.preset_combo.blockSignals(False)
         idx = self.preset_combo.findData(current)
@@ -152,15 +152,15 @@ class PromptPanel(QWidget):
         self.del_btn.setEnabled(not preset.builtin)
         self.reset_btn.setEnabled(preset.builtin)
         self.modified_label.setText(
-            f"Updated {preset.updated_at[:16].replace('T', ' ')}" if preset.updated_at else ""
+            f"更新于 {preset.updated_at[:16].replace('T', ' ')}" if preset.updated_at else ""
         )
         # binding hint
         if preset.id == self._presets.default_preset_id:
-            self.binding_label.setText("(default)")
+            self.binding_label.setText("（默认）")
         self._update_count()
 
     def _update_count(self) -> None:
-        self.count_label.setText(f"{len(self.content_edit.toPlainText())} chars")
+        self.count_label.setText(f"{len(self.content_edit.toPlainText())} 字")
 
     def _on_preset_changed(self) -> None:
         self._load_editor()
@@ -179,14 +179,14 @@ class PromptPanel(QWidget):
 
     def _save_as(self) -> None:
         p = self._presets.create(
-            self.name_edit.text() + " (copy)", self.content_edit.toPlainText(),
+            self.name_edit.text() + "（副本）", self.content_edit.toPlainText(),
             self.desc_edit.text(),
         )
         self._editing_id = p.id
         self.reload()
 
     def _new(self) -> None:
-        p = self._presets.create("New Preset", "", "")
+        p = self._presets.create("新建 Preset", "", "")
         self._editing_id = p.id
         self.reload()
 
