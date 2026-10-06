@@ -1,40 +1,37 @@
-"""Conversation discovery over local ChatGPT Desktop data.
+"""Conversation discovery over local ChatGPT Desktop / Codex data.
 
-Read-only. The provider reads the app's local ``Local Storage`` LevelDB
-(``codex.chatgpt-conversations``) for the conversation list and the
-``browser-sidebar-page-states.json`` side-car for the currently open
-conversation id. It never writes, never calls a private web API, never reads
-cookies, and never uploads anything.
+Read-only. Three local sources, each clearly classified:
 
-Measured data shape (ChatGPT Desktop, ``OpenAI.Codex`` MSIX bundle):
+* ``~/.codex/session_index.jsonl`` -> **codex_work_session**: the desktop
+  Work/Agent threads (what the desktop app actually drives - user-confirmed).
+* the desktop app's embedded chatgpt.com browser cache -> **web_cache**: its
+  conversation list mirrors the chatgpt.com *web* sidebar, not the Work
+  threads. Listed for completeness, always badged Web Cache, never trusted as
+  "the open conversation".
+* ``browser-sidebar-page-states.json`` -> which conversation id the desktop
+  app currently has open (**desktop_active**, execution truth).
 
-* Local Storage key ``codex.chatgpt-conversations`` → JSON
-  ``{"pageParams":[...],"pages":[{"items":[{"id","title","create_time",
-  "update_time","workspace_id",...}]}],"version":...}``
-* ``browser-sidebar-page-states.json`` → ``{"pages": { "<key>": {
-  "conversationId", "page": {"updatedAt", "title", ...} }}, "version":...}``
+Projects come from ``~/.codex/.codex-global-state.json`` (``local-projects``),
+which carries real project names.
+
+Nothing here is ever written; no private web APIs; no cookies; no uploads.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
 
 from app.discovery import paths
 from app.discovery.leveldb_reader import LevelDB
 from app.discovery.models import (
     ConversationInfo,
     ProjectInfo,
-    SOURCE_CODEX_LOCAL_STORAGE,
+    SOURCE_CODEX_WORK,
     SOURCE_DESKTOP_ACTIVE,
-    SOURCE_UNKNOWN,
+    SOURCE_WEB_CACHE,
 )
 from app.utils.logging_setup import get_logger
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 
 log = get_logger("discovery")
 
@@ -44,17 +41,12 @@ DEVICE_ID_KEY = b"codex.chatgpt-conversations.device-id"
 
 
 def _decode_local_storage_value(value: bytes) -> str:
-    """LocalStorage values are stored as a 1-byte type tag + UTF-16LE string.
-
-    ``0x00``/``0x01`` are both seen as type tags in the wild; a UTF-8 fallback
-    covers values written by other code paths.
-    """
+    """LocalStorage values are stored as a 1-byte type tag + UTF-16LE string."""
     if not value:
         return ""
     body = value[1:] if value[0] in (0x00, 0x01) else value
     try:
         text = body.decode("utf-16-le")
-        # A correctly decoded JSON string never starts with a control char.
         if text.lstrip("\ufeff").lstrip()[:1] in ("{", "[") or "title" in text:
             return text
     except UnicodeDecodeError:
@@ -106,14 +98,21 @@ class ConversationDiscoveryProvider:
 
 
 class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
-    """The real implementation, backed by the local user-data directory."""
+    """The real implementation, backed by the local user-data directories."""
 
     name = "local"
 
-    def __init__(self, user_data: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        user_data: str | Path | None = None,
+        codex_home: str | Path | None = None,
+    ) -> None:
+        self._explicit_user_data = user_data
+        self._explicit_codex_home = codex_home
         self._user_data: Path | None = None
-        self._explicit = user_data
-        self._conversations: list[ConversationInfo] = []
+        self._codex_home: Path | None = None
+        self._work_sessions: list[ConversationInfo] = []
+        self._web_conversations: list[ConversationInfo] = []
         self._projects: list[ProjectInfo] = []
         self._current_id: str = ""
         self._available = False
@@ -125,35 +124,78 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
     def available(self) -> bool:
         return self._available
 
-    def _resolve(self) -> Path | None:
-        self._user_data = paths.resolve_user_data_dir(self._explicit)
-        return self._user_data
-
     # -- refresh -----------------------------------------------------------
 
     def refresh(self) -> None:
-        root = self._resolve()
-        if root is None:
-            log.info("ChatGPT user-data directory not found; discovery disabled")
-            self._available = False
-            self._conversations = []
-            self._projects = []
-            self._current_id = ""
-            return
+        self._user_data = paths.resolve_user_data_dir(self._explicit_user_data)
+        self._codex_home = paths.resolve_codex_home(self._explicit_codex_home)
 
-        self._conversations = self._read_conversations(root)
+        self._work_sessions = self._read_work_sessions()
+        self._web_conversations = self._read_web_conversations()
         self._projects = self._read_projects()
-        self._current_id = self._read_current_id(root)
-        self._available = True
+        self._current_id = self._read_current_id()
+        self._available = bool(self._work_sessions or self._web_conversations)
         log.info(
-            "discovery: %d conversations, %d projects, current=%s",
-            len(self._conversations),
+            "discovery: %d work sessions, %d web conversations, %d projects, current=%s",
+            len(self._work_sessions),
+            len(self._web_conversations),
             len(self._projects),
             self._current_id or "(none)",
         )
 
-    def _read_conversations(self, root: Path) -> list[ConversationInfo]:
-        leveldb_dir = paths.local_storage_dir(root)
+    # -- source 1: Codex Work threads (the desktop app's real list) --------
+
+    def _read_work_sessions(self) -> list[ConversationInfo]:
+        if self._codex_home is None:
+            return []
+        index_file = paths.session_index_file(self._codex_home)
+        if not index_file.is_file():
+            log.info("no codex session index at %s", index_file)
+            return []
+        rows: dict[str, dict] = {}
+        try:
+            with index_file.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    cid = entry.get("id")
+                    if not cid:
+                        continue
+                    prev = rows.get(cid)
+                    if prev is None or (entry.get("updated_at") or "") > (
+                        prev.get("updated_at") or ""
+                    ):
+                        rows[cid] = entry
+        except OSError as exc:
+            log.warning("could not read session index: %s", exc)
+            return []
+
+        sessions = [
+            ConversationInfo(
+                id=cid,
+                title=entry.get("thread_name", "") or "",
+                updated_at=entry.get("updated_at"),
+                source=SOURCE_CODEX_WORK,
+                source_kind=SOURCE_CODEX_WORK,
+                is_cached=True,
+                confidence=0.8,
+            )
+            for cid, entry in rows.items()
+        ]
+        sessions.sort(key=lambda c: c.updated_at or c.title, reverse=True)
+        return sessions
+
+    # -- source 2: embedded chatgpt.com cache (web sidebar mirror) ---------
+
+    def _read_web_conversations(self) -> list[ConversationInfo]:
+        if self._user_data is None:
+            return []
+        leveldb_dir = paths.local_storage_dir(self._user_data)
         if not leveldb_dir.is_dir():
             return []
         try:
@@ -172,40 +214,56 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
                 if not cid:
                     continue
                 existing = merged.get(cid)
-                # Keep the newest update_time across the multiple versions the
-                # app keeps around.
                 if existing is None or (row.get("update_time") or "") > (
                     existing.get("update_time") or ""
                 ):
                     merged[cid] = row
 
-        conversations = [self._to_info(row) for row in merged.values()]
-        conversations.sort(key=lambda c: c.updated_at or c.title, reverse=True)
-        return conversations
+        convos = [
+            ConversationInfo(
+                id=row.get("id", ""),
+                title=row.get("title", "") or "",
+                project_id=row.get("workspace_id") or "",
+                updated_at=row.get("update_time"),
+                source=SOURCE_WEB_CACHE,
+                source_kind=SOURCE_WEB_CACHE,
+                is_cached=True,
+                confidence=0.3,
+            )
+            for row in merged.values()
+        ]
+        convos.sort(key=lambda c: c.updated_at or c.title, reverse=True)
+        return convos
 
-    def _to_info(self, row: dict) -> ConversationInfo:
-        return ConversationInfo(
-            id=row.get("id", ""),
-            title=row.get("title", "") or "",
-            project_id=row.get("workspace_id") or "",
-            updated_at=row.get("update_time"),
-            source=SOURCE_CODEX_LOCAL_STORAGE,
-            source_kind=SOURCE_CODEX_LOCAL_STORAGE,
-            is_cached=True,
-        )
+    # -- projects ----------------------------------------------------------
 
     def _read_projects(self) -> list[ProjectInfo]:
-        # ChatGPT's local cache carries workspace_id per conversation but no
-        # workspace *name*. When workspaces are in use, surface them by id;
-        # when absent, expose a single default bucket so the UI is not empty.
-        seen: dict[str, str] = {}
-        for c in self._conversations:
-            if c.project_id and c.project_id not in seen:
-                seen[c.project_id] = c.project_id
-        return [ProjectInfo(id=pid, name=pid, source=self.name) for pid in seen]
+        """Real project names from the Codex global state (local-projects)."""
+        if self._codex_home is None:
+            return []
+        state_file = paths.global_state_file(self._codex_home)
+        if not state_file.is_file():
+            return []
+        try:
+            data = json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        projects: list[ProjectInfo] = []
+        for entry in (data.get("local-projects") or {}).values():
+            if not isinstance(entry, dict):
+                continue
+            pid = entry.get("id")
+            name = entry.get("name")
+            if pid and name:
+                projects.append(ProjectInfo(id=pid, name=name, source="codex_local"))
+        return projects
 
-    def _read_current_id(self, root: Path) -> str:
-        sidebar = paths.sidebar_states_file(root)
+    # -- current conversation ---------------------------------------------
+
+    def _read_current_id(self) -> str:
+        if self._user_data is None:
+            return ""
+        sidebar = paths.sidebar_states_file(self._user_data)
         if not sidebar.is_file():
             return ""
         try:
@@ -213,8 +271,6 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
         except (OSError, json.JSONDecodeError):
             return ""
 
-        # The most recently updated page is the best proxy for "the tab the
-        # user is looking at". Skip pages that failed to load.
         best_id = ""
         best_updated = -1
         for entry in data.get("pages", {}).values():
@@ -239,33 +295,38 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
         return list(self._projects)
 
     def list_conversations(self, project_id: str | None = None) -> list[ConversationInfo]:
+        """Work sessions first (the desktop app's real threads), then the web
+        cache. ``project_id`` filters (matches either source's project id)."""
         if project_id is None:
-            return list(self._conversations)
-        return [c for c in self._conversations if c.project_id == project_id]
+            return [*self._work_sessions, *self._web_conversations]
+        return [
+            c
+            for c in (*self._work_sessions, *self._web_conversations)
+            if c.project_id == project_id
+        ]
 
     def get_current_conversation(self) -> ConversationInfo | None:
         """The conversation currently open in the desktop UI (execution truth).
 
-        Sourced from the app's own sidebar tab state, cross-checked against the
-        local conversation cache to attach a title when available.
+        The id comes from the desktop app's own tab state; the title is
+        resolved from the Work thread index first, then the web cache.
         """
         if not self._current_id:
             return None
-        for c in self._conversations:
-            if c.id == self._current_id:
-                info = ConversationInfo(
-                    id=c.id,
-                    title=c.title,
-                    project_id=c.project_id,
-                    updated_at=c.updated_at,
-                    source=SOURCE_DESKTOP_ACTIVE,
-                    source_kind=SOURCE_DESKTOP_ACTIVE,
-                    is_current=True,
-                    is_verified=True,
-                    confidence=0.95,
-                )
-                return info
-        # The open tab is an unsaved / not-yet-listed thread.
+        for source in (self._work_sessions, self._web_conversations):
+            for c in source:
+                if c.id == self._current_id:
+                    return ConversationInfo(
+                        id=c.id,
+                        title=c.title,
+                        project_id=c.project_id,
+                        updated_at=c.updated_at,
+                        source=SOURCE_DESKTOP_ACTIVE,
+                        source_kind=SOURCE_DESKTOP_ACTIVE,
+                        is_current=True,
+                        is_verified=True,
+                        confidence=0.95,
+                    )
         return ConversationInfo(
             id=self._current_id,
             title="",
@@ -277,41 +338,46 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
         )
 
     def get_by_id(self, conversation_id: str) -> ConversationInfo | None:
-        for c in self._conversations:
-            if c.id == conversation_id:
-                return c
+        for source in (self._work_sessions, self._web_conversations):
+            for c in source:
+                if c.id == conversation_id:
+                    return c
         return None
 
     def get_conversation_by_id(self, conversation_id: str) -> ConversationInfo | None:
         return self.get_by_id(conversation_id)
 
+    def find_by_title(self, title: str) -> list[ConversationInfo]:
+        """All conversations whose title matches exactly.
+
+        More than one result means the title is ambiguous - callers must NOT
+        guess. Work sessions take precedence in the result order.
+        """
+        needle = (title or "").strip()
+        if not needle:
+            return []
+        hits = [c for c in self._work_sessions if (c.title or "").strip() == needle]
+        hits += [c for c in self._web_conversations if (c.title or "").strip() == needle]
+        return hits
+
     def resolve_current_conversation(self, uia_title: str = "") -> ConversationInfo | None:
         """Best-effort identity of the open conversation, combining the desktop
-        sidebar id with the UIA selected title.
-
-        Confidence drops (and verification is withdrawn) when the two signals
-        disagree or when the title is ambiguous - the caller must then refuse
-        to send rather than guess.
-        """
+        tab id with the UIA selected title."""
         current = self.get_current_conversation()
         if current is None:
             return None
 
         title = (uia_title or "").strip()
         if not title:
-            # No UIA title: trust the sidebar id alone, with reduced confidence.
             current.confidence = min(current.confidence, 0.5)
             current.is_verified = False
             return current
 
-        # Sidebar id maps to a cached conversation whose title matches UIA.
         if current.title and current.title.strip() == title:
             current.confidence = 0.95
             current.is_verified = True
             return current
 
-        # Sidebar id not in cache, but the UIA title uniquely maps to one
-        # cached conversation: that conversation is what is on screen.
         matches = self.find_by_title(title)
         if len(matches) == 1:
             resolved = matches[0]
@@ -327,23 +393,14 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
                 confidence=0.85,
             )
 
-        # Ambiguous or unresolved title: do not guess.
         current.confidence = 0.3
         current.is_verified = False
         return current
 
-    def find_by_title(self, title: str) -> list[ConversationInfo]:
-        """All conversations whose title matches exactly (whitespace-insensitive).
-
-        More than one result means the title is ambiguous - callers must NOT
-        guess.
-        """
-        needle = (title or "").strip()
-        if not needle:
-            return []
-        return [c for c in self._conversations if (c.title or "").strip() == needle]
-
     def describe(self) -> str:
         if not self._available:
             return "local (unavailable)"
-        return f"local ({len(self._conversations)} conversations)"
+        return (
+            f"local ({len(self._work_sessions)} work sessions, "
+            f"{len(self._web_conversations)} web cached)"
+        )

@@ -36,8 +36,19 @@ class ProjectInfo:
 
 #: Coarse classification of where a conversation came from. Local cache is a
 #: *candidate* source; the desktop UI is the execution truth.
+#:
+#: Measured reality (2026-10-07, user-confirmed):
+#: - ``codex_work_session``  -> the ChatGPT Desktop (Codex) Work/Agent threads
+#:   listed in ``~/.codex/session_index.jsonl``. This is what the desktop app
+#:   actually drives.
+#: - ``web_cache``           -> the embedded chatgpt.com browser cache inside
+#:   the desktop app (``%APPDATA%\\Codex\\web\\Codex``). Its conversation list
+#:   mirrors the chatgpt.com *web* sidebar, NOT the desktop Work threads.
+#: - ``desktop_active``      -> the conversation currently open in the desktop
+#:   UI (execution truth).
 SOURCE_DESKTOP_ACTIVE = "desktop_active"
 SOURCE_DESKTOP_CACHE = "desktop_cache"
+SOURCE_CODEX_WORK = "codex_work_session"
 SOURCE_CODEX_LOCAL_STORAGE = "codex_local_storage"
 SOURCE_WEB_CACHE = "web_cache"
 SOURCE_UNKNOWN = "unknown"
@@ -45,6 +56,7 @@ SOURCE_UNKNOWN = "unknown"
 KNOWN_SOURCE_KINDS = (
     SOURCE_DESKTOP_ACTIVE,
     SOURCE_DESKTOP_CACHE,
+    SOURCE_CODEX_WORK,
     SOURCE_CODEX_LOCAL_STORAGE,
     SOURCE_WEB_CACHE,
     SOURCE_UNKNOWN,

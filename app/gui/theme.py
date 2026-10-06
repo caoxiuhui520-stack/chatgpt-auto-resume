@@ -38,8 +38,9 @@ NEUTRAL = "#64748b"      # grey
 #: source badge colour per source kind
 SOURCE_COLORS = {
     "desktop_active": "#16a34a",
-    "desktop_cache": "#2563eb",
-    "codex_local_storage": "#0891b2",
+    "codex_work_session": "#2563eb",
+    "desktop_cache": "#0891b2",
+    "codex_local_storage": "#d97706",
     "web_cache": "#d97706",
     "unknown": "#94a3b8",
 }
@@ -68,8 +69,9 @@ def source_color(kind: str) -> str:
 def source_label(kind: str) -> str:
     return {
         "desktop_active": "Desktop",
+        "codex_work_session": "Work",
         "desktop_cache": "Cache",
-        "codex_local_storage": "Local Storage",
+        "codex_local_storage": "Web Cache",
         "web_cache": "Web Cache",
         "unknown": "Unverified",
     }.get(kind, kind)
