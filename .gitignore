@@ -1,0 +1,27 @@
+# Runtime state / secrets
+data/
+logs/
+config.yaml
+
+# Research material (cloned reference projects, never real dependencies)
+references/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

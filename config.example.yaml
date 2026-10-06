@@ -1,0 +1,82 @@
+# ============================================================================
+# ChatGPT Auto Resume - configuration
+# Copy this file to config.yaml and edit.
+# ============================================================================
+
+# How often the daemon polls. Seconds.
+# 30 is fine for a normal desktop; the resetsAt hint will schedule a fast
+# re-poll near the expected reset time regardless of this value.
+poll_interval_seconds: 30
+
+# Hard safety switch. While true, the program will NEVER type into ChatGPT.
+# It only logs "Would send prompt". Keep it true until you have watched the
+# logs for at least one full quota cycle.
+dry_run: true
+
+resume:
+  enabled: true
+  # Prompt file, relative to the project root unless absolute.
+  prompt_file: prompts/continue.txt
+  # After a successful send, refuse to send again for this many minutes.
+  cooldown_minutes: 30
+  # Maximum send attempts for a single quota-reset event.
+  max_retries: 5
+  # Retry backoff schedule, seconds. Index 0 = first retry delay.
+  retry_backoff_seconds: [0, 30, 120, 300, 900]
+
+chatgpt:
+  # Auto-launch ChatGPT Desktop when the quota is restored but the app is gone.
+  auto_start: true
+  # Explicit path to ChatGPT.exe. Leave empty to auto-discover.
+  exe_path: ""
+  # Seconds to wait for the main window after launching.
+  launch_wait_seconds: 30
+  # Process names to look for, in priority order.
+  process_names: ["ChatGPT.exe"]
+
+usage:
+  # Primary provider: codex_app_server (verified, local JSON-RPC).
+  provider: codex_app_server
+  # Order of fallbacks attempted when the primary fails.
+  fallback_providers: ["codex_http", "fake"]
+  # Per-request timeout when talking to `codex app-server`.
+  request_timeout_seconds: 15
+  # Explicit codex executable path. Empty = auto-discover.
+  codex_path: ""
+  # Treat the 5h window as exhausted at/above this used percent.
+  exhausted_threshold_percent: 100
+  # Treat quota as restored at/below this used percent on the 5h window.
+  restored_threshold_percent: 99
+
+# Task lock: only resume when the active ChatGPT conversation matches the
+# expected project. Prevents sending "continue" into the wrong chat.
+task_lock:
+  enabled: false
+  project: "huanyu"
+  # Optional exact conversation title / thread name to match.
+  conversation: ""
+  # Marker string that must appear in the visible conversation context.
+  goal_hash: ""
+
+notifications:
+  windows: true
+telegram:
+  enabled: false
+  bot_token: ""
+  chat_id: ""
+
+logging:
+  level: INFO
+  max_size_mb: 10
+  backup_count: 5
+  # Security: never log these (substring match, case-insensitive).
+  redact_keys: ["token", "secret", "authorization", "cookie", "api_key", "password", "credential"]
+
+health:
+  heartbeat_seconds: 300
+  # Consecutive provider failures before raising a notification.
+  max_consecutive_failures: 5
+
+daemon:
+  # Application name used for the Windows Task Scheduler entry.
+  task_name: "ChatGPTAutoResume"

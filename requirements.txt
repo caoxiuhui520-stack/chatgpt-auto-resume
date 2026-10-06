@@ -1,0 +1,18 @@
+# Core runtime (required)
+PyYAML>=6.0
+requests>=2.31
+
+# Windows UI automation (required on Windows)
+pywinauto>=0.6.8
+pywin32>=306
+
+# Notifications (optional, Windows toast)
+winotify>=1.1.0
+
+# System tray (optional, Phase 11)
+# pystray>=0.19.5
+# Pillow>=10.0
+
+# Development
+pytest>=7.4
+pytest-cov>=4.1
