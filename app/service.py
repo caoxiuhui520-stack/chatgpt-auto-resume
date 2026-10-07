@@ -96,17 +96,21 @@ class AppService:
         status.daemon_running = self.running
         status.uptime_seconds = time.monotonic() - self._started_at if self._started_at else 0.0
 
-        # send mode / arming
+        # send mode / arming (core gate, with full runtime context)
         from app.main import assess_send_mode
 
+        discovery = self.discovery
+        test_store = self.test_store
+        store_state = self.daemon.store.state if self.daemon is not None else None
         try:
-            mode, reason = assess_send_mode(cfg)
+            mode, reason = assess_send_mode(cfg, discovery, test_store, store_state)
         except SystemExit as exc:
             mode, reason = "monitor", str(exc)
         status.real_send_armed = mode == "armed"
-        status.send_mode = "armed" if mode == "armed" else ("dry_run" if not cfg.dry_run else "monitor")
         status.dry_run = cfg.dry_run
         status.armed_reason = reason
+        # Canonical send-mode semantics (colour/text agree with core state):
+        status.send_mode = self._send_mode(cfg, mode, reason, test_store, store_state)
 
         if self.daemon is not None:
             status.state = self.daemon.sm.state.value
@@ -136,7 +140,11 @@ class AppService:
             except Exception:  # noqa: BLE001
                 status.active_conversation_title = ""
 
-        # discovery
+        # discovery (mtime-driven: only rescan when the watched files changed)
+        try:
+            self.discovery.refresh_if_changed()
+        except Exception:  # noqa: BLE001
+            pass
         status.discovery_available = self.discovery.available
         status.conversation_count = len(self.discovery.list_conversations())
         try:
@@ -166,14 +174,16 @@ class AppService:
             except Exception:  # noqa: BLE001
                 status.target_match = None
 
-        # test send
-        status.test_send_passed = self.test_store.passed
+        # test send: a pass only counts when it certifies the CURRENT target.
+        status.test_send_passed = self.test_store.is_valid_for_target(target)
         status.test_send_last = {
             "status": self.test_store.record.get("status"),
             "conversation_id": self.test_store.record.get("conversation_id"),
+            "conversation_title": self.test_store.record.get("conversation_title"),
             "channel": self.test_store.record.get("channel"),
             "confirmation": self.test_store.record.get("confirmation"),
             "timestamp": self.test_store.record.get("timestamp"),
+            "target_fingerprint": self.test_store.record.get("target_fingerprint"),
         }
 
         self._last_snapshot = status
@@ -183,6 +193,28 @@ class AppService:
 
     def _persist(self) -> None:
         save_config(self.cfg, self.config_path or getattr(self.cfg, "_source_path", None))
+
+    @staticmethod
+    def _send_mode(cfg, mode, reason, test_store, store_state) -> str:
+        """Canonical send-mode labels, derived from the core gate result.
+
+        * ``dry_run``       - never types
+        * ``armed``         - a real send may fire on quota restore
+        * ``uncertain``     - a pending resume/test transaction is UNCERTAIN
+        * ``ready_to_arm``  - every gate passes except ``armed``
+        * ``blocked``       - some gate fails (target/cert/trust/…)
+        """
+        if mode == "armed":
+            return "armed"
+        if cfg.dry_run:
+            return "dry_run"
+        if test_store is not None and test_store.uncertain:
+            return "uncertain"
+        if store_state is not None and getattr(store_state, "pending_send_status", "") == "UNCERTAIN":
+            return "uncertain"
+        if not cfg.real_send.armed:
+            return "ready_to_arm"
+        return "blocked"
 
     def persist_config(self) -> None:
         """Public alias so the GUI can persist the current config atomically."""
@@ -195,8 +227,27 @@ class AppService:
         project_id: str = "",
         project_name: str = "",
     ) -> None:
-        self.cfg.target.conversation_id = (conversation_id or "").strip()
-        self.cfg.target.conversation_title = (conversation_title or "").strip()
+        from app.config import TargetConfig
+        from app.target import target_trusted
+
+        conversation_id = (conversation_id or "").strip()
+        conversation_title = (conversation_title or "").strip()
+
+        # P0-3 (service layer): a web-cache or ephemeral conversation can never
+        # become a production target, even if a caller bypasses the GUI.
+        if conversation_id:
+            trusted, why = target_trusted(
+                TargetConfig(
+                    conversation_id=conversation_id, conversation_title=conversation_title
+                ),
+                self.discovery,
+            )
+            if not trusted:
+                log.warning("refusing to set untrusted target: %s", why)
+                raise ValueError(f"不能设为目标：{why}")
+
+        self.cfg.target.conversation_id = conversation_id
+        self.cfg.target.conversation_title = conversation_title
         self.cfg.target.project_id = (project_id or "").strip()
         self.cfg.target.project_name = (project_name or "").strip()
         # Choosing a target implies the task lock is wanted, keyed by the
@@ -206,6 +257,10 @@ class AppService:
         self.cfg.task_lock.project = ""
         self.cfg.task_lock.conversation = ""
         self._persist()
+
+        # P0-4: switching the target invalidates any prior test certification.
+        if self.test_store.invalidate_if_target_changed(self.cfg.target):
+            log.info("target changed; prior test certification invalidated")
 
     def clear_target(self) -> None:
         self.cfg.target = type(self.cfg.target)()

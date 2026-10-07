@@ -34,17 +34,40 @@ def test_atomic_write_leaves_no_tmp(tmp_path):
     assert isinstance(yaml.safe_load(path.read_text(encoding="utf-8")), dict)
 
 
-def test_set_target_enables_task_lock(tmp_path):
+def test_set_target_enables_task_lock(tmp_path, monkeypatch):
+    from app.discovery.models import ConversationInfo, SOURCE_CODEX_WORK
     from app.service import AppService
 
     path = tmp_path / "config.yaml"
     save_config(AppConfig(), path)
     svc = AppService(config_path=path)
+    # The target must be trusted: simulate a Work session in the discovery.
+    monkeypatch.setattr(
+        svc.discovery, "get_by_id",
+        lambda cid: ConversationInfo(id=cid, title="CT", source_kind=SOURCE_CODEX_WORK),
+    )
     svc.set_target(conversation_id="cid", conversation_title="CT")
     reloaded = load_config(path, create_if_missing=False)
     assert reloaded.target.conversation_id == "cid"
     assert reloaded.target.conversation_title == "CT"
     assert reloaded.task_lock.enabled is True
+
+
+def test_set_target_rejects_web_cache(tmp_path, monkeypatch):
+    from app.discovery.models import ConversationInfo, SOURCE_WEB_CACHE
+    from app.service import AppService
+
+    import pytest
+
+    path = tmp_path / "config.yaml"
+    save_config(AppConfig(), path)
+    svc = AppService(config_path=path)
+    monkeypatch.setattr(
+        svc.discovery, "get_by_id",
+        lambda cid: ConversationInfo(id=cid, title="Web", source_kind=SOURCE_WEB_CACHE),
+    )
+    with pytest.raises(ValueError):
+        svc.set_target(conversation_id="w1", conversation_title="Web")
 
 
 def test_set_prompt_writes_atomically(tmp_path):

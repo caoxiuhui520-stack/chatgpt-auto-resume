@@ -215,10 +215,57 @@ class PromptPresetManager:
     ) -> tuple[str, str]:
         """Return (rendered_prompt, preset_id). ``conversation_id`` selects the
         bound preset (or the default); ``fallback`` is used only when nothing
-        else is available."""
+        else is available.
+
+        This is the *lenient* variant (used for previews/diagnostics). The
+        send path must use :meth:`resolve_prompt_strict`, which fails closed.
+        """
         preset = self.preset_for_conversation(conversation_id)
         if preset is None:
             return fallback, ""
+        return self._render(preset, context)
+
+    def resolve_prompt_strict(
+        self,
+        conversation_id: str,
+        *,
+        fallback: str = "",
+        context: Mapping[str, str] | None = None,
+    ) -> tuple[str, str]:
+        """Fail-closed resolution for real/test sends.
+
+        * An explicit binding whose preset is missing/undecodable, or a
+          rendering failure, raises :class:`PromptResolutionError` - never a
+          silent fallback to a different prompt.
+        * Only when there is *no* explicit binding AND no default preset is
+          the legacy ``fallback`` (continue.txt) used, and it is logged.
+        """
+        binding = self.get_binding(conversation_id)
+        if binding is not None:
+            preset = self._presets.get(binding.preset_id)
+            if preset is None:
+                raise PromptResolutionError(
+                    f"对话 {conversation_id} 绑定的 preset 不存在或已损坏: {binding.preset_id}"
+                )
+            return self._render(preset, context)
+
+        preset = self.default_preset()
+        if preset is None:
+            log.warning("legacy fallback used: no default preset available")
+            return fallback, ""
+        return self._render(preset, context)
+
+    def _render(self, preset: PromptPreset, context: Mapping[str, str] | None) -> tuple[str, str]:
+        try:
+            rendered = render_prompt(preset.content, context or {})
+        except Exception as exc:  # noqa: BLE001
+            raise PromptResolutionError(f"preset {preset.id} 渲染失败: {exc}") from exc
+        # P1-4: persist last_used_at, but only on real resolution (not preview).
         preset.last_used_at = utcnow().isoformat()
-        rendered = render_prompt(preset.content, context or {})
+        preset.updated_at = preset.updated_at or preset.created_at
+        self._persist_presets()
         return rendered, preset.id
+
+
+class PromptResolutionError(Exception):
+    """A preset could not be resolved safely. The caller must NOT send."""

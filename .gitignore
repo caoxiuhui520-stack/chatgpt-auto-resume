@@ -25,3 +25,6 @@ htmlcov/
 .idea/
 Thumbs.db
 desktop.ini
+
+# Local dev prompts (not part of the project)
+phase A prompts.md

@@ -110,19 +110,25 @@ class WizardDialog(QDialog):
     def _load_choices(self) -> None:
         self.service.discovery.refresh()
         self.conv_combo.clear()
-        self._conversations = self.service.discovery.list_conversations()
-        # The conversation actually open in the desktop UI goes first and is
-        # preselected - a first test send then matches immediately.
+        # Single source of truth: the combo stores only ids; every id maps to
+        # its ConversationInfo here. The current conversation is included even
+        # when it is not yet in the ordinary list (get_current_conversation
+        # can return it), so Finish/Test Send always resolve correctly.
+        self._conversation_by_id: dict[str, "object"] = {}
+        for c in self.service.discovery.list_conversations():
+            self._conversation_by_id[c.id] = c
         current = None
         try:
             current = self.service.discovery.get_current_conversation()
         except Exception:  # noqa: BLE001
             current = None
         if current is not None:
+            self._conversation_by_id[current.id] = current
             label = f"[当前打开] {current.display_title or current.short_id}  ({current.short_id})"
             self.conv_combo.addItem(label, current.id)
-            self._conversations = [c for c in self._conversations if c.id != current.id]
-        for c in self._conversations:
+        for c in self.service.discovery.list_conversations():
+            if current is not None and c.id == current.id:
+                continue
             self.conv_combo.addItem(f"{c.display_title}  ({c.short_id})", c.id)
         self.preset_combo.clear()
         for p in self.service.presets.list_presets():
@@ -151,10 +157,7 @@ class WizardDialog(QDialog):
 
     def _selected_conversation(self):
         cid = self.conv_combo.currentData()
-        for c in self._conversations:
-            if c.id == cid:
-                return c
-        return None
+        return self._conversation_by_id.get(cid)
 
     def _refresh_steps(self) -> None:
         status = self.service.snapshot()
@@ -224,24 +227,23 @@ class WizardDialog(QDialog):
         preset_id = self.preset_combo.currentData()
         if preset_id:
             self.service.presets.set_default(preset_id)
-        wizard_file = Path(self.service.cfg.data_dir) / "wizard.json"
-        wizard_file.parent.mkdir(parents=True, exist_ok=True)
-        wizard_file.write_text(
-            json.dumps({"completed": True, "test_send_passed": self.service.test_store.passed}),
-            encoding="utf-8",
-        )
+        self._write_wizard({"completed": True, "skipped": False,
+                            "test_send_passed": self.service.test_store.passed})
         self.accept()
 
     def reject(self) -> None:  # noqa: D401 - user closed the wizard via X
-        # Closing the wizard counts as "skip": remember it so it does not pop
-        # up on every start.
-        wizard_file = Path(self.service.cfg.data_dir) / "wizard.json"
-        wizard_file.parent.mkdir(parents=True, exist_ok=True)
-        wizard_file.write_text(
-            json.dumps({"completed": True, "test_send_passed": self.service.test_store.passed}),
-            encoding="utf-8",
-        )
+        # Closing via X is a *skip*, not a completion: record skipped=true so
+        # the wizard does not re-open on every start, but mark setup incomplete
+        # so the main window can show SETUP INCOMPLETE until configured.
+        self._write_wizard({"completed": False, "skipped": True,
+                            "test_send_passed": self.service.test_store.passed})
         super().reject()
+
+    def _write_wizard(self, payload: dict) -> None:
+        from app.utils.atomic import atomic_write_json
+
+        wizard_file = Path(self.service.cfg.data_dir) / "wizard.json"
+        atomic_write_json(wizard_file, payload)
 
 
 class MainWindow(QMainWindow):
@@ -270,6 +272,9 @@ class MainWindow(QMainWindow):
         self.current_badge = QLabel("当前：—")
         self.current_badge.setStyleSheet(f"color: {theme.TEXT_MUTED};")
         hl.addWidget(self.current_badge, 1)
+        self.setup_badge = StatusBadge("首次配置未完成", "mismatch")
+        self.setup_badge.hide()
+        hl.addWidget(self.setup_badge)
         self.mode_badge = StatusBadge("演练 DRY RUN", "dry_run")
         hl.addWidget(self.mode_badge)
         root.addWidget(header)
@@ -316,6 +321,8 @@ class MainWindow(QMainWindow):
         self.panel.open_chatgpt_requested.connect(self._open_chatgpt)
         self.panel.open_logs_requested.connect(self._open_logs)
         self.panel.refresh_requested.connect(self._refresh_all)
+        self.panel.rerun_wizard_requested.connect(self._rerun_wizard)
+        self.panel.clear_test_state_requested.connect(self._clear_test_state)
 
     def _on_status(self, status: AppStatus) -> None:
         self._last_status = status
@@ -324,15 +331,45 @@ class MainWindow(QMainWindow):
 
         current_label = status.active_conversation_title or status.current_conversation_id or "—"
         self.current_badge.setText(f"当前：{current_label}")
-        if status.send_mode == "armed":
-            self.mode_badge.set_kind("ready")
-            self.mode_badge.setText("已启用 ARMED")
-        elif not status.dry_run:
-            self.mode_badge.set_kind("dry_run")
-            self.mode_badge.setText("真实发送（未启用）")
+        badge_map = {
+            "armed": ("ready", "已启用 ARMED"),
+            "dry_run": ("dry_run", "演练 DRY RUN"),
+            "uncertain": ("uncertain", "发送结果不确定"),
+            "ready_to_arm": ("waiting", "可启用（尚未 Arm）"),
+            "blocked": ("mismatch", "被阻止"),
+            "monitor": ("monitoring", "监控中"),
+        }
+        kind, text = badge_map.get(status.send_mode, ("monitoring", status.send_mode))
+        self.mode_badge.set_kind(kind)
+        self.mode_badge.setText(text)
+        self._update_setup_badge(status)
+
+    def _setup_incomplete(self) -> bool:
+        wizard_file = Path(self.service.cfg.data_dir) / "wizard.json"
+        if not wizard_file.exists():
+            return False  # first run: the wizard itself will open
+        try:
+            data = json.loads(wizard_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return not bool(data.get("completed", False))
+
+    def _update_setup_badge(self, status: AppStatus) -> None:
+        if self._setup_incomplete() and not status.target_configured:
+            self.setup_badge.show()
         else:
-            self.mode_badge.set_kind("dry_run")
-            self.mode_badge.setText("演练 DRY RUN")
+            self.setup_badge.hide()
+
+    def _rerun_wizard(self) -> None:
+        wizard = WizardDialog(self.service, self)
+        wizard.exec()
+        self._refresh_all()
+
+    def _clear_test_state(self) -> None:
+        self.service.test_store.clear()
+        self.panel.note.setText("已清除测试状态，可重新执行测试发送。")
+        self.panel.note.setStyleSheet(f"color: {theme.MONITORING};")
+        self._refresh_all()
 
     def _refresh_sidebar(self, status: AppStatus) -> None:
         convos = self.service.discovery.list_conversations()

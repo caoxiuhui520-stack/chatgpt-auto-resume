@@ -73,9 +73,78 @@ def test_armed_without_task_lock_means_monitor(cfg):
     assert "task_lock" in reason
 
 
-def test_all_four_conditions_arm_real_send(cfg):
+def test_all_conditions_arm_real_send(cfg):
+    """Full core gate: dry_run=false + armed + task_lock + trusted target +
+    valid test certification."""
+    from app.discovery.models import ConversationInfo, SOURCE_CODEX_WORK
+    from app.target import fingerprint_of
+
     cfg = _real_cfg(cfg)
     cfg.real_send.armed = True
     cfg.task_lock.enabled = True
-    mode, _reason = assess_send_mode(cfg)
-    assert mode == "armed"
+    cfg.target.conversation_id = "abc"
+    cfg.target.conversation_title = "Project X"
+
+    class _Discovery:
+        def get_by_id(self, cid):
+            return ConversationInfo(id=cid, title="Project X", source_kind=SOURCE_CODEX_WORK)
+
+    class _TestStore:
+        uncertain = False
+
+        def is_valid_for_target(self, target):
+            return target.conversation_id == "abc"
+
+    class _State:
+        pending_send_status = "NONE"
+
+    mode, reason = assess_send_mode(cfg, _Discovery(), _TestStore(), _State())
+    assert mode == "armed", reason
+
+
+def test_arm_blocked_without_valid_test_cert(cfg):
+    from app.discovery.models import ConversationInfo, SOURCE_CODEX_WORK
+
+    cfg = _real_cfg(cfg)
+    cfg.real_send.armed = True
+    cfg.task_lock.enabled = True
+    cfg.target.conversation_id = "abc"
+    cfg.target.conversation_title = "Project X"
+
+    class _Discovery:
+        def get_by_id(self, cid):
+            return ConversationInfo(id=cid, title="Project X", source_kind=SOURCE_CODEX_WORK)
+
+    class _TestStore:
+        uncertain = False
+
+        def is_valid_for_target(self, target):
+            return False  # no valid certification
+
+    class _State:
+        pending_send_status = "NONE"
+
+    mode, reason = assess_send_mode(cfg, _Discovery(), _TestStore(), _State())
+    assert mode == "monitor"
+    assert "certification" in reason
+
+
+def test_arm_blocked_with_untrusted_target(cfg):
+    from app.discovery.models import ConversationInfo, SOURCE_WEB_CACHE
+
+    cfg = _real_cfg(cfg)
+    cfg.real_send.armed = True
+    cfg.task_lock.enabled = True
+    cfg.target.conversation_id = "w1"
+    cfg.target.conversation_title = "Web"
+
+    class _Discovery:
+        def get_by_id(self, cid):
+            return ConversationInfo(id=cid, title="Web", source_kind=SOURCE_WEB_CACHE)
+
+    class _State:
+        pending_send_status = "NONE"
+
+    mode, reason = assess_send_mode(cfg, _Discovery(), None, _State())
+    assert mode == "monitor"
+    assert "untrusted" in reason

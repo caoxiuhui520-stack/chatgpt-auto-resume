@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from app.models import ErrorKind, ResumeResult, UsageSnapshot, utcnow
+from app.prompts.manager import PromptResolutionError
 from app.resume.duplicate_guard import DuplicateGuard
 from app.resume.retry_manager import RetryManager
 from app.storage.state_store import StateStore
@@ -153,6 +154,32 @@ class ResumeManager:
             self.controller.find_window()
             title = self.controller.conversation_title()
             current_id = self._current_conversation_id()
+
+            # Unify on resolve_current_conversation(): combine the desktop tab
+            # id with the UIA title and require the identity to be *verified*.
+            # For a real send the current conversation must be desktop_active
+            # with confidence >= 0.85 - a cached/guessed identity never
+            # authorises typing.
+            if not dry and self.discovery is not None:
+                try:
+                    resolved = self.discovery.resolve_current_conversation(title)
+                except Exception:  # noqa: BLE001
+                    resolved = None
+                if resolved is not None:
+                    current_id = resolved.id
+                    title = resolved.title or title
+                    if (
+                        not resolved.is_verified
+                        or resolved.source_kind != "desktop_active"
+                        or resolved.confidence < 0.85
+                    ):
+                        result = ResumeResult(
+                            False,
+                            ErrorKind.TASK_LOCK_MISMATCH,
+                            "当前对话身份未通过验证（无法确认就是目标对话），禁止发送",
+                        )
+                        self._finish(result)
+                        return result
         ok, why = self.task_lock_ok(title, current_id)
         if not ok:
             result = ResumeResult(False, ErrorKind.TASK_LOCK_MISMATCH, why)
@@ -192,9 +219,15 @@ class ResumeManager:
 
         # ---- prompt resolution (preset bound to the target conversation) --
         # The preset for the target conversation wins over the static prompt;
-        # safe variables are rendered right before the send.
+        # safe variables are rendered right before the send. Resolution is
+        # fail-closed: a broken binding/rendering aborts the send.
         binding_id = self.cfg.target.conversation_id or current_id
-        prompt = self._resolve_prompt(prompt, binding_id, title, snapshot, now)
+        try:
+            prompt = self._resolve_prompt(prompt, binding_id, title, snapshot, now)
+        except PromptResolutionError as exc:
+            result = ResumeResult(False, ErrorKind.PROMPT_RESOLUTION_FAILED, str(exc))
+            self._finish(result)
+            return result
 
         # ---- send ---------------------------------------------------------
         if dry:
@@ -292,7 +325,12 @@ class ResumeManager:
         snapshot: UsageSnapshot,
         now: datetime,
     ) -> str:
-        """Render the bound preset (or default) with safe variables."""
+        """Render the bound preset (or default) with safe variables.
+
+        Fail-closed: an explicit binding whose preset is missing, or a
+        rendering error, raises :class:`PromptResolutionError` - the caller
+        must then refuse to send rather than silently fall back.
+        """
         if self.presets is None:
             return fallback
         context = {
@@ -304,14 +342,10 @@ class ResumeManager:
             ),
             "last_resume_time": self.store.state.last_resume_time or "",
         }
-        try:
-            prompt, _preset_id = self.presets.resolve_prompt(
-                conversation_id, fallback=fallback, context=context
-            )
-            return prompt
-        except Exception:  # noqa: BLE001 - preset failure must not block the send
-            log.exception("preset resolution failed; using fallback prompt")
-            return fallback
+        prompt, _preset_id = self.presets.resolve_prompt_strict(
+            conversation_id, fallback=fallback, context=context
+        )
+        return prompt
 
     def _notify_uncertain(self, message: str) -> None:
         if self.notifier is not None:

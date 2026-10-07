@@ -55,19 +55,22 @@ class _FakeCfg:
 
 
 class _FakeDiscovery:
+    def __init__(self, current_id="abc"):
+        self.current_id = current_id
+
     def refresh(self):
         pass
 
     def get_current_conversation(self):
         from app.discovery.models import ConversationInfo
 
-        return ConversationInfo(id="abc", title="Target")
+        return ConversationInfo(id=self.current_id, title="Target")
 
     def get_by_id(self, cid):
-        from app.discovery.models import ConversationInfo
+        from app.discovery.models import ConversationInfo, SOURCE_CODEX_WORK
 
         if cid == "abc":
-            return ConversationInfo(id="abc", title="Target")
+            return ConversationInfo(id="abc", title="Target", source_kind=SOURCE_CODEX_WORK)
         return None
 
 
@@ -83,9 +86,11 @@ def test_refused_without_target(tmp_path):
 
 def test_refused_on_target_mismatch(tmp_path):
     cfg = _FakeCfg(cid="abc", title="Target")
-    r = run_test_send(_FakeController(title="Other"), cfg, None, _store(tmp_path))
+    # current id "def" differs from target "abc" → mismatch
+    r = run_test_send(_FakeController(title="Other"), cfg, _FakeDiscovery(current_id="def"),
+                      _store(tmp_path))
     assert r.ok is False and r.status == "refused"
-    assert "mismatch" in r.reason
+    assert "mismatch" in r.reason or "不匹配" in r.reason or "不是目标" in r.reason
 
 
 def test_passed_confirms_transaction(tmp_path):

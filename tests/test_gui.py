@@ -181,10 +181,13 @@ def test_control_panel_test_send_gate(service):
     panel.deleteLater()
 
 
-def test_target_resolver_is_id_primary():
+def test_target_resolver_is_dual_factor():
     from app.config import TargetConfig
     from app.target import TargetResolver
 
-    m = TargetResolver().resolve(TargetConfig(conversation_id="abc"), "abc", "X", None)
+    m = TargetResolver().resolve(
+        TargetConfig(conversation_id="abc", conversation_title="X"), "abc", "X", None
+    )
     assert m.status == "matched"
+    assert m.authorized is True
     assert m.matched_by == "conversation_id"

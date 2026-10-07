@@ -22,7 +22,7 @@ from app.utils.logging_setup import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover
     from app.chatgpt.base import ChatGptController
-    from app.config import AppConfig
+    from app.config import AppConfig, TargetConfig
     from app.discovery.provider import ConversationDiscoveryProvider
 
 log = get_logger("test_send")
@@ -35,6 +35,7 @@ STATUS_NONE = "NONE"
 STATUS_PREPARED = "PREPARED"
 STATUS_CONFIRMED = "CONFIRMED"
 STATUS_UNCERTAIN = "UNCERTAIN"
+STATUS_TEST_REQUIRED = "TEST_REQUIRED"
 
 
 @dataclass(slots=True)
@@ -52,7 +53,18 @@ class TestSendResult:
 
 
 class SendTestJournal:
-    """Durable record of the last test send, isolated from the resume state."""
+    """Durable record of the last test send, isolated from the resume state.
+
+    A confirmed test send is a *certification for one specific target*: the
+    record carries the target fingerprint (sha256 of id+title). If the target
+    changes, the certification no longer applies and a new test is required.
+
+    Crash recovery: a ``PREPARED`` record on load means the previous process
+    may already have sent the test message; it is converted to ``UNCERTAIN``
+    (never auto-resend), cleared only by an explicit user action.
+    """
+
+    TRANSPORT_VERSION = "1"
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -60,19 +72,29 @@ class SendTestJournal:
             "transaction_type": "test",
             "status": STATUS_NONE,
             "conversation_id": "",
+            "conversation_title": "",
+            "target_fingerprint": "",
             "channel": "",
             "confirmation": "",
             "timestamp": None,
             "prompt": "",
+            "transport_version": self.TRANSPORT_VERSION,
         }
         self.load()
 
     def load(self) -> dict:
         if self.path.exists():
             try:
-                self.record.update(json.loads(self.path.read_text(encoding="utf-8")))
+                loaded = json.loads(self.path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
-                pass
+                loaded = {}
+            self.record.update(loaded)
+            # Crash recovery: PREPARED on disk = a previous send may have been
+            # delivered before the crash. Never auto-resend.
+            if self.record.get("status") == STATUS_PREPARED:
+                self.record["status"] = STATUS_UNCERTAIN
+                self.record.setdefault("confirmation", "previous test send interrupted")
+                self._write()
         return self.record
 
     def _write(self) -> None:
@@ -91,15 +113,21 @@ class SendTestJournal:
                 pass
             raise
 
-    def begin(self, conversation_id: str, prompt: str) -> None:
+    def begin(self, conversation_id: str, conversation_title: str, prompt: str) -> None:
+        from app.target import fingerprint_of
+
+        # Bind the certification to this exact target.
         self.record.update(
             {
                 "status": STATUS_PREPARED,
-                "conversation_id": conversation_id,
+                "conversation_id": conversation_id or "",
+                "conversation_title": conversation_title or "",
+                "target_fingerprint": fingerprint_of(conversation_id, conversation_title),
                 "prompt": prompt,
                 "timestamp": utcnow().isoformat(),
                 "channel": "",
                 "confirmation": "",
+                "transport_version": self.TRANSPORT_VERSION,
             }
         )
         self._write()
@@ -117,12 +145,57 @@ class SendTestJournal:
         self._write()
 
     def abort(self) -> None:
-        self.record.update({"status": STATUS_NONE, "channel": "", "confirmation": ""})
+        self.record.update(
+            {"status": STATUS_NONE, "channel": "", "confirmation": "", "target_fingerprint": ""}
+        )
+        self._write()
+
+    def clear(self) -> None:
+        """Explicit user action to reset a UNCERTAIN/old test state."""
+        self.record.update(
+            {
+                "status": STATUS_NONE,
+                "conversation_id": "",
+                "conversation_title": "",
+                "target_fingerprint": "",
+                "channel": "",
+                "confirmation": "",
+                "prompt": "",
+            }
+        )
         self._write()
 
     @property
     def passed(self) -> bool:
         return self.record.get("status") == STATUS_CONFIRMED
+
+    @property
+    def uncertain(self) -> bool:
+        return self.record.get("status") == STATUS_UNCERTAIN
+
+    def is_valid_for_target(self, target: "TargetConfig") -> bool:
+        """True only when the last confirmed test send certifies THIS target."""
+        from app.target import target_fingerprint
+
+        if self.record.get("status") != STATUS_CONFIRMED:
+            return False
+        if (self.record.get("conversation_id") or "") != (target.conversation_id or "").strip():
+            return False
+        if (self.record.get("target_fingerprint") or "") != target_fingerprint(target):
+            return False
+        return True
+
+    def invalidate_if_target_changed(self, target: "TargetConfig") -> bool:
+        """If a test was CONFIRMED for a *different* target, mark TEST_REQUIRED.
+
+        Returns True when the certification was invalidated. The historical
+        record (which target was last verified) is kept for display.
+        """
+        if self.record.get("status") == STATUS_CONFIRMED and not self.is_valid_for_target(target):
+            self.record["status"] = STATUS_TEST_REQUIRED
+            self._write()
+            return True
+        return False
 
 
 def run_test_send(
@@ -134,8 +207,17 @@ def run_test_send(
     """Execute one supervised test send. Blocking; call from a worker thread."""
     from app.target import TargetResolver
 
+    # P0-6: a previous test send ended UNCERTAIN (or was interrupted and
+    # recovered to UNCERTAIN). It may already have been delivered - refuse a
+    # new send until the user explicitly clears the test state.
+    if store.uncertain:
+        return TestSendResult(
+            False, "refused",
+            reason="上一次测试发送结果不确定（可能已送达），请先在 GUI 清除测试状态后再重试",
+        )
+
     if not controller.is_running():
-        return TestSendResult(False, "refused", reason="ChatGPT Desktop is not running")
+        return TestSendResult(False, "refused", reason="ChatGPT 桌面端未运行")
 
     info = controller.find_window()
     if info is None:
@@ -154,18 +236,20 @@ def run_test_send(
 
     target = cfg.target
     if not (target.conversation_id or target.conversation_title.strip()):
-        return TestSendResult(False, "refused", reason="no target conversation configured")
+        return TestSendResult(False, "refused", reason="未配置目标对话")
     match = TargetResolver().resolve(target, current_id, title, discovery)
     if not match.ok:
-        return TestSendResult(
-            False, "refused", reason=f"target mismatch: {match.reason}"
-        )
+        return TestSendResult(False, "refused", reason=f"目标未通过验证: {match.reason}")
 
     if controller.is_busy() is not False:
-        return TestSendResult(False, "refused", reason="ChatGPT is busy or state unknown")
+        return TestSendResult(False, "refused", reason="ChatGPT 正在生成或状态未知")
 
     # -- durable PREPARED before any real input -----------------------------
-    store.begin(match.target.id if match.target else target.conversation_id, TEST_PROMPT)
+    store.begin(
+        target.conversation_id or current_id,
+        target.conversation_title or title,
+        TEST_PROMPT,
+    )
 
     result = controller.send_prompt(TEST_PROMPT, dry_run=False)
     if not result.success:

@@ -122,17 +122,24 @@ class ConversationInfo:
 
 @dataclass(slots=True)
 class ConversationMatch:
-    """Result of resolving a target identity against the local conversation."""
+    """Result of resolving a target identity against the live conversation.
 
-    status: str  # "matched" | "mismatch" | "ambiguous" | "unknown" | "not_configured"
+    ``status`` is one of the identity states below. ``ok`` is true only for a
+    fully authorised ``matched`` (dual-factor: id AND title). ``authorized`` is
+    the flag the send path may consult: title-only matches are reported for
+    diagnostics but are never authorised for a real send.
+    """
+
+    status: str  # see MATCH_STATUSES below
     target: ConversationInfo | None = None
     current: ConversationInfo | None = None
     reason: str = ""
     matched_by: str = ""  # "conversation_id" | "conversation_title" | ""
+    authorized: bool = False
 
     @property
     def ok(self) -> bool:
-        return self.status == "matched"
+        return self.status == "matched" and self.authorized
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -141,4 +148,19 @@ class ConversationMatch:
             "current": self.current.to_dict() if self.current else None,
             "reason": self.reason,
             "matched_by": self.matched_by,
+            "authorized": self.authorized,
         }
+
+
+#: Identity-verification states. Only ``matched`` (authorized) permits a real
+#: send; every other state refuses.
+MATCH_STATUSES = (
+    "not_configured",
+    "matched",
+    "mismatch",
+    "identity_conflict",
+    "ambiguous",
+    "unknown",
+    "web_cache_target",
+    "ephemeral_target",
+)

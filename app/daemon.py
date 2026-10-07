@@ -358,6 +358,18 @@ class Daemon:
             self.sm.force(State.COOLDOWN, "send uncertain - manual check required")
             return
 
+        if result.error == ErrorKind.PROMPT_RESOLUTION_FAILED:
+            # A preset binding/rendering failure is a config problem, not a
+            # transient one. Never send; notify and pause this window so the
+            # user can fix the preset. No automatic retry loop.
+            self._notify(
+                Event.RESUME_FAILED,
+                f"续跑 Prompt 解析失败，本额度窗口不会发送：{detail}。请到 GUI 检查 Prompt 预设。",
+            )
+            log.error("prompt resolution failed; pausing window: %s", detail)
+            self.sm.force(State.COOLDOWN, "prompt resolution failed")
+            return
+
         if result.error in (ErrorKind.CHATGPT_BUSY, ErrorKind.CHATGPT_NOT_RUNNING,
                             ErrorKind.WINDOW_NOT_FOUND, ErrorKind.TASK_LOCK_MISMATCH):
             log.info("resume deferred: %s (%s)", result.error, detail)

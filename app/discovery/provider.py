@@ -116,6 +116,7 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
         self._projects: list[ProjectInfo] = []
         self._current_id: str = ""
         self._available = False
+        self._mtimes: dict[str, float] = {}
         self.refresh()
 
     # -- availability ------------------------------------------------------
@@ -135,6 +136,7 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
         self._projects = self._read_projects()
         self._current_id = self._read_current_id()
         self._available = bool(self._work_sessions or self._web_conversations)
+        self._record_mtimes()
         log.info(
             "discovery: %d work sessions, %d web conversations, %d projects, current=%s",
             len(self._work_sessions),
@@ -142,6 +144,42 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
             len(self._projects),
             self._current_id or "(none)",
         )
+
+    def _record_mtimes(self) -> None:
+        codex = self._codex_home
+        ud = self._user_data
+        self._mtimes = {
+            "sidebar": self._mtime(paths.sidebar_states_file(ud) if ud else None),
+            "session_index": self._mtime(paths.session_index_file(codex) if codex else None),
+            "global_state": self._mtime(paths.global_state_file(codex) if codex else None),
+        }
+
+    @staticmethod
+    def _mtime(path: Path | None) -> float:
+        if path is None or not path.is_file():
+            return 0.0
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def refresh_if_changed(self) -> bool:
+        """Re-read only when a watched local file's mtime changed.
+
+        Cheap enough to call on every snapshot (~ms) and avoids rescanning
+        LevelDB / session_index every poll. Returns True when a refresh ran.
+        """
+        codex = self._codex_home
+        ud = self._user_data
+        current = {
+            "sidebar": self._mtime(paths.sidebar_states_file(ud) if ud else None),
+            "session_index": self._mtime(paths.session_index_file(codex) if codex else None),
+            "global_state": self._mtime(paths.global_state_file(codex) if codex else None),
+        }
+        if any(current[k] != self._mtimes.get(k) for k in current):
+            self.refresh()
+            return True
+        return False
 
     # -- source 1: Codex Work threads (the desktop app's real list) --------
 

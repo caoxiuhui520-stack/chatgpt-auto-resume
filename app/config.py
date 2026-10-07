@@ -53,9 +53,9 @@ class ChatGptConfig:
 @dataclass
 class UsageConfig:
     provider: str = "codex_app_server"
-    fallback_providers: list[str] = field(
-        default_factory=lambda: ["codex_http", "fake"]
-    )
+    #: ``fake`` is NEVER part of a production default. It is only reachable
+    #: via an explicit ``--provider fake`` or ``AUTO_RESUME_SCENARIO``.
+    fallback_providers: list[str] = field(default_factory=lambda: ["codex_http"])
     request_timeout_seconds: int = 15
     codex_path: str = ""
     exhausted_threshold_percent: int = 100

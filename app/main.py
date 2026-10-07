@@ -128,7 +128,15 @@ def build_daemon(cfg, *, controller_name: str | None = None, provider_name: str 
     )
     health = HealthMonitor(cfg.health.heartbeat_seconds, cfg.health.max_consecutive_failures)
 
-    return Daemon(
+    test_store = None
+    try:
+        from app.resume.test_send import SendTestJournal
+
+        test_store = SendTestJournal(cfg.data_dir / "test_send.json")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("test send journal unavailable: %s", exc)
+
+    daemon = Daemon(
         cfg=cfg,
         provider=provider,
         controller=controller,
@@ -141,6 +149,10 @@ def build_daemon(cfg, *, controller_name: str | None = None, provider_name: str 
         health=health,
         fallback_providers=fallbacks,
     )
+    # Expose the objects the core send-gate needs (used by cmd_run / GUI).
+    daemon.discovery = discovery  # type: ignore[attr-defined]
+    daemon.test_store = test_store  # type: ignore[attr-defined]
+    return daemon
 
 
 def _valid_state(name: str) -> bool:
@@ -165,10 +177,16 @@ def _refuse_fake_when_not_dry_run(cfg) -> None:
         )
 
 
-def assess_send_mode(cfg) -> tuple[str, str]:
+def assess_send_mode(cfg, discovery=None, test_store=None, store_state=None) -> tuple[str, str]:
     """Decide whether a real send is permitted.
 
     Returns (mode, reason) where mode is ``"armed"`` or ``"monitor"``.
+
+    This is the *core* gate (not a GUI gate): it enforces the target trust,
+    the test certification and the UNCERTAIN checks even when no GUI is
+    running. ``discovery`` / ``test_store`` / ``store_state`` are injected by
+    the daemon; when they are None the corresponding checks are skipped (used
+    by the pre-build static check only).
 
     A fake provider with dry_run=false raises SystemExit - that is a
     configuration error and must not silently degrade to monitor-only.
@@ -180,9 +198,33 @@ def assess_send_mode(cfg) -> tuple[str, str]:
         return "monitor", "real_send.armed=false"
     if not cfg.task_lock.enabled:
         return "monitor", "real_send.armed=true but task_lock.enabled=false"
+
+    target = cfg.target
+    if not (target.conversation_id or "").strip():
+        return "monitor", "no target conversation configured"
+
+    from app.target import target_trusted
+
+    trusted, why = target_trusted(target, discovery)
+    if not trusted:
+        return "monitor", f"target source untrusted: {why}"
+
+    if test_store is not None:
+        if test_store.uncertain:
+            return "monitor", "pending test send is UNCERTAIN"
+        if not test_store.is_valid_for_target(target):
+            return "monitor", "no valid test-send certification for the current target"
+
+    if store_state is not None:
+        from app.storage.state_store import PendingSend
+
+        if store_state.pending_send_status == PendingSend.UNCERTAIN:
+            return "monitor", "pending resume transaction is UNCERTAIN"
+
     return (
         "armed",
-        "dry_run=false, real_send.armed=true, task_lock.enabled=true, no fake provider",
+        "dry_run=false, armed=true, task_lock=true, target trusted, "
+        "test certification valid, no UNCERTAIN, no fake provider",
     )
 
 
@@ -262,6 +304,22 @@ def cmd_run(cfg, args) -> int:
             pass
 
     daemon.store.save()
+
+    # P0-5 (core gate): re-evaluate arming with full runtime context (target
+    # trust + test certification + UNCERTAIN), independent of any GUI. If the
+    # full check fails, degrade to monitor-only regardless of config.yaml.
+    mode, reason = assess_send_mode(
+        cfg,
+        discovery=getattr(daemon, "discovery", None),
+        test_store=getattr(daemon, "test_store", None),
+        store_state=daemon.store.state,
+    )
+    if mode != "armed":
+        log.warning("core send gate: not armed (%s); forcing monitor-only", reason)
+        cfg.dry_run = True
+    else:
+        log.warning("REAL SEND ARMED (core gate): %s", reason)
+
     try:
         daemon.run_forever()
     except KeyboardInterrupt:  # pragma: no cover

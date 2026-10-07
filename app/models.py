@@ -217,6 +217,7 @@ class ErrorKind:
     TASK_LOCK_MISMATCH = "task_lock_mismatch"
     FOCUS_UNVERIFIED = "focus_unverified"
     SEND_UNCERTAIN = "send_uncertain"
+    PROMPT_RESOLUTION_FAILED = "prompt_resolution_failed"
     DRY_RUN = "dry_run"
     UNKNOWN = "unknown"
 

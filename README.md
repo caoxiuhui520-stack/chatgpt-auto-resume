@@ -35,19 +35,37 @@ resume with its own strategy. Presets support a small set of safe variables
 nothing is evaluated, only substituted. Presets persist in
 `data/prompt_presets.json`, bindings in `data/conversation_bindings.json`.
 
-**Conversation sources are labelled.** `Desktop` marks the conversation
-actually open in the desktop UI (execution truth); `Local Storage` marks
-cached candidates. A cached entry is never presented as the open conversation,
-and a title that matches several conversations is AMBIGUOUS - nothing is sent.
+**Conversation sources are labelled and never mixed.**
+
+| Source | Data | Role |
+|---|---|---|
+| `codex_work_session` | `~/.codex/session_index.jsonl` | the desktop Work/Agent threads - **can be a target** |
+| `desktop_active` | desktop tab state + UIA title verification | the conversation open right now - **execution truth** |
+| `web_cache` | embedded chatgpt.com browser cache (`%APPDATA%\Codex\web\Codex`) | diagnostic/history only - **never a target** |
+
+A cached entry is never presented as the open conversation, and a title that
+matches several conversations is AMBIGUOUS - nothing is sent.
+
+**Identity verification is dual-factor.** A real send requires the cached
+conversation id AND the live UIA title to both agree with the target. An
+id/title conflict (`IDENTITY_CONFLICT`) refuses to send; title-only matches
+are never authorised. Web-cache and ephemeral (`client-new-thread:`) targets
+are refused at three layers (resolver, service, core gate).
 
 First run starts a wizard that walks through environment → quota → target →
 preset → **Supervised Test Send**. The test send uses the exact production
 transport (ValuePattern + InvokePattern, PREPARED fsync before input,
 POST_SEND_VERIFY) with a dedicated test prompt and its own transaction record,
-so it can never consume a real quota `reset_id`. **Real sends stay blocked
-until the test send has passed**, the Test Send button itself is disabled
-without a target / on mismatch / on ambiguity, and the Arm button stays
-disabled until then.
+so it can never consume a real quota `reset_id`. A passing test send
+**certifies exactly one target** (sha256 fingerprint of id+title): switching
+the target invalidates the certification and requires a new test. The Arm
+button stays disabled until a valid certification exists for the current
+target.
+
+The **send gate is enforced in the core, not just the GUI** - even with
+`dry_run: false` + `real_send.armed: true` in `config.yaml`, the daemon stays
+monitor-only unless the target is trusted, the test certification is valid,
+and no transaction is UNCERTAIN.
 
 A standalone build is also available:
 
@@ -57,7 +75,7 @@ A standalone build is also available:
 ```
 
 The GUI reads the conversation list from ChatGPT Desktop's **local** storage
-(read-only LevelDB) - no private web APIs, no cookies, no uploads.
+(read-only) - no private web APIs, no cookies, no uploads.
 
 ---
 

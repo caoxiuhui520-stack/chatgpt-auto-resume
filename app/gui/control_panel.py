@@ -61,6 +61,8 @@ class ControlPanel(QWidget):
     open_logs_requested = Signal()
     refresh_requested = Signal()
     bind_preset_requested = Signal(str, str)  # conversation_id, preset_id
+    rerun_wizard_requested = Signal()
+    clear_test_state_requested = Signal()
 
     def __init__(self, service, parent=None) -> None:
         super().__init__(parent)
@@ -198,6 +200,13 @@ class ControlPanel(QWidget):
         row3.addWidget(self.open_chatgpt_btn)
         row3.addWidget(self.open_logs_btn)
         row3.addWidget(self.refresh_btn)
+        self.rerun_wizard_btn = primary_button("重新运行首次配置向导", flat=True)
+        self.rerun_wizard_btn.clicked.connect(self.rerun_wizard_requested.emit)
+        row3.addWidget(self.rerun_wizard_btn)
+        self.clear_test_btn = primary_button("清除测试状态", flat=True)
+        self.clear_test_btn.setProperty("danger", True)
+        self.clear_test_btn.clicked.connect(self.clear_test_state_requested.emit)
+        row3.addWidget(self.clear_test_btn)
         card.body().addLayout(row3)
 
         self.note = QLabel("")
