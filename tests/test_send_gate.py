@@ -73,6 +73,22 @@ class _FakeDiscovery:
             return ConversationInfo(id="abc", title="Target", source_kind=SOURCE_CODEX_WORK)
         return None
 
+    def resolve_current_conversation(self, uia_title=""):
+        from app.discovery.models import (
+            ConversationInfo,
+            SOURCE_DESKTOP_ACTIVE,
+        )
+
+        return ConversationInfo(
+            id=self.current_id,
+            title="Target",
+            source=SOURCE_DESKTOP_ACTIVE,
+            source_kind=SOURCE_DESKTOP_ACTIVE,
+            is_current=True,
+            is_verified=True,
+            confidence=0.9,
+        )
+
 
 def _store(tmp_path):
     return SendTestJournal(tmp_path / "test_send.json")

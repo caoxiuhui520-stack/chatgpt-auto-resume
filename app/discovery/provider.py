@@ -399,18 +399,34 @@ class LocalChatGPTDiscoveryProvider(ConversationDiscoveryProvider):
         return hits
 
     def resolve_current_conversation(self, uia_title: str = "") -> ConversationInfo | None:
-        """Best-effort identity of the open conversation, combining the desktop
-        tab id with the UIA selected title."""
+        """Best-effort identity of the open conversation.
+
+        Title signal priority:
+        1. UIA selected title (chat/web view) - cross-checked against the tab id.
+        2. Work thread name from ``session_index.jsonl`` - the desktop-authority
+           title for Work/Agent views, where UIA exposes no chat sidebar. The
+           id and the title come from *different* files, so they still form a
+           cross-check (one stale file cannot fake both).
+        """
         current = self.get_current_conversation()
         if current is None:
             return None
 
         title = (uia_title or "").strip()
+
+        # Signal 2: Work thread name for this tab id (desktop-authoritative).
         if not title:
-            current.confidence = min(current.confidence, 0.5)
+            if current.title:
+                # get_current_conversation already resolved the title from the
+                # Work session index for this tab id.
+                current.is_verified = True
+                current.confidence = 0.9
+                return current
             current.is_verified = False
+            current.confidence = 0.5
             return current
 
+        # Signal 1: UIA title cross-check.
         if current.title and current.title.strip() == title:
             current.confidence = 0.95
             current.is_verified = True

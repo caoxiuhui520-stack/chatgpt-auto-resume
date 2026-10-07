@@ -156,11 +156,11 @@ class ResumeManager:
             current_id = self._current_conversation_id()
 
             # Unify on resolve_current_conversation(): combine the desktop tab
-            # id with the UIA title and require the identity to be *verified*.
-            # For a real send the current conversation must be desktop_active
-            # with confidence >= 0.85 - a cached/guessed identity never
-            # authorises typing.
-            if not dry and self.discovery is not None:
+            # id with the title signal (UIA title, or the Work thread name from
+            # session_index.jsonl for Work/Agent views). A real send requires
+            # the identity to be verified desktop_active, confidence >= 0.85;
+            # a dry run keeps the lenient diagnostic path.
+            if self.discovery is not None:
                 try:
                     resolved = self.discovery.resolve_current_conversation(title)
                 except Exception:  # noqa: BLE001
@@ -168,7 +168,7 @@ class ResumeManager:
                 if resolved is not None:
                     current_id = resolved.id
                     title = resolved.title or title
-                    if (
+                    if not dry and (
                         not resolved.is_verified
                         or resolved.source_kind != "desktop_active"
                         or resolved.confidence < 0.85

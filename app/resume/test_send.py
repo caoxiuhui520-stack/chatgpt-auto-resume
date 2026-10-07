@@ -224,20 +224,27 @@ def run_test_send(
         return TestSendResult(False, "refused", reason="no ChatGPT conversation window found")
 
     # -- task lock: the test may only go to the matched conversation --------
-    title = controller.conversation_title()
+    # Identity is resolved through the discovery layer: the tab-state id plus
+    # the title signal (UIA title when available, otherwise the Work thread
+    # name from session_index.jsonl - the desktop-authority source for
+    # Work/Agent views where UIA exposes no chat sidebar).
+    uia_title = controller.conversation_title()
     current_id = ""
+    current_title = ""
     if discovery is not None:
         try:
             discovery.refresh()
-            current = discovery.get_current_conversation()
-            current_id = current.id if current else ""
+            resolved = discovery.resolve_current_conversation(uia_title)
+            if resolved is not None:
+                current_id = resolved.id
+                current_title = resolved.title or uia_title
         except Exception:  # noqa: BLE001
             pass
 
     target = cfg.target
     if not (target.conversation_id or target.conversation_title.strip()):
         return TestSendResult(False, "refused", reason="未配置目标对话")
-    match = TargetResolver().resolve(target, current_id, title, discovery)
+    match = TargetResolver().resolve(target, current_id, current_title, discovery)
     if not match.ok:
         return TestSendResult(False, "refused", reason=f"目标未通过验证: {match.reason}")
 
